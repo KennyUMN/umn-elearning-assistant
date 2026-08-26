@@ -25,37 +25,80 @@ Asisten pintar berbasis AI yang terhubung langsung ke **E-Learning Universitas M
 
 ---
 
-## 🚀 Panduan Setup Cepat (3 Langkah)
+## 🚀 Panduan Setup Cepat
 
-### 1. Salin Konfigurasi `.env`
-Salin file `.env.example` menjadi `.env`:
+> ⏱️ Butuh: Python 3.10+, akun SSO UMN, Gemini API key (gratis), bot Telegram.
+
+### 1. Install & Salin Konfigurasi
 ```bash
+git clone https://github.com/KennyUMN/umn-elearning-assistant.git
+cd umn-elearning-assistant
+python3 -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
+pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Buka dan isi file `.env`:
-- `UMN_USERNAME` : NIM atau username SSO UMN kamu.
-- `UMN_PASSWORD` : Password akun SSO UMN kamu.
-- `GEMINI_API_KEY`: Dapatkan gratis di [Google AI Studio](https://aistudio.google.com/).
-- `TELEGRAM_BOT_TOKEN`: Dapatkan dari [@BotFather](https://t.me/BotFather) di Telegram (ketik `/newbot`).
-- `TELEGRAM_CHAT_ID`: ID akun Telegram kamu (dapat dilihat via bot [@userinfobot](https://t.me/userinfobot) atau ketik `/id` di bot kamu).
+Lalu buka `.env` dan isi:
+| Variabel | Isi | Cara dapetin |
+|---|---|---|
+| `UMN_USERNAME` | NIM / username SSO UMN | — |
+| `UMN_PASSWORD` | Password SSO UMN | — |
+| `GEMINI_API_KEY` | API key Gemini | Gratis di [Google AI Studio](https://aistudio.google.com/) |
+| `TELEGRAM_BOT_TOKEN` | Token bot kamu | Chat [@BotFather](https://t.me/BotFather), ketik `/newbot` |
+| `TELEGRAM_CHAT_ID` | ID chat Telegram kamu | Kirim pesan ke bot kamu lalu jalankan `/id`, atau cek [@userinfobot](https://t.me/userinfobot) |
 
 ### 2. Atur Jadwal Mata Kuliah Mingguan
-Buka file `data/metadata/class_schedule.json` dan sesuaikan jadwal kuliah kamu per hari (Senin - Jumat) agar AI tahu jadwal kelas apa saja yang kamu hadapi setiap harinya.
+Buka `data/metadata/class_schedule.json` dan sesuaikan jadwal kuliah kamu per hari (Senin–Jumat) agar briefing pagi sesuai kelas kamu.
 
-### 3. Jalankan Aplikasi
-Aktifkan virtual environment dan jalankan:
+### 3. Jalankan
 
-**Opsi A: Tes Sinkronisasi E-Learning Pertama Kali (CLI)**
+**Opsi A: Tes sinkronisasi pertama kali (CLI)**
 ```bash
-source venv/bin/activate
 python sync.py
 ```
 
-**Opsi B: Jalankan Bot Telegram + Cron Scheduler Otomatis**
+**Opsi B: Jalankan bot Telegram + cron scheduler otomatis**
 ```bash
-source venv/bin/activate
 python main.py
+```
+
+Kalau `/sync` sukses dan bot bales chat → selesai. 🎉
+
+<details>
+<summary><b>🐳 Alternatif: Docker (tanpa setup Python)</b></summary>
+
+```bash
+cp .env.example .env   # isi dulu seperti langkah 1
+docker compose up -d
+```
+</details>
+
+---
+
+## 🤖 Malas Setup Manual? Pakai AI Agent
+
+Punya AI agent coding (Hermes, Claude Code, Codex, Cursor, dll.)? Copy-paste prompt ini ke agent kamu, dia yang bakal ngedeploy semuanya sambil nanya bagian yang kurang:
+
+```text
+Bantu aku deploy project di https://github.com/KennyUMN/umn-elearning-assistant.git
+(bot Telegram + RAG untuk e-learning kampusku).
+
+Caraku:
+1. Clone repo, baca README.md dan .env.example untuk paham konfigurasinya.
+2. Setup Python virtual environment + install dependencies.
+3. Tanyakan kepadaku nilai-nilai .env satu per satu dengan penjelasan singkat
+   cara mendapatkannya (UMN_USERNAME, UMN_PASSWORD, GEMINI_API_KEY,
+   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) — jangan minta semua sekaligus.
+4. Tulis file .env dari jawabanku.
+5. Bantu aku mengisi data/metadata/class_schedule.json sesuai jadwal kuliahku.
+6. Jalankan python sync.py untuk tes sinkronisasi pertama kali; kalau error,
+   diagnosa dan perbaiki sampai sukses.
+7. Terakhir, jalankan python main.py di background dan pastikan bot merespons
+   /courses di Telegram.
+
+Jelaskan setiap langkah dalam bahasa sederhana karena aku belum familiar
+dengan AI agent maupun deployment.
 ```
 
 ---
