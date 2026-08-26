@@ -1,0 +1,42 @@
+{
+  "Senin": [
+    {
+      "course": "Technopreneurship",
+      "code": "EM105-B",
+      "time": "08:00 - 10:30",
+      "room": "B.501"
+    },
+    {
+      "course": "Information Technology Research",
+      "code": "IF590-B",
+      "time": "11:00 - 13:30",
+      "room": "C.302"
+    }
+  ],
+  "Selasa": [
+    {
+      "course": "Deep Learning",
+      "code": "IF542-A",
+      "time": "08:00 - 10:30",
+      "room": "Lab Komputer"
+    },
+    {
+      "course": "Cybersecurity",
+      "code": "IF571-B",
+      "time": "11:00 - 13:30",
+      "room": "D.401"
+    }
+  ],
+  "Rabu": [
+    {
+      "course": "Mobile Application Programming",
+      "code": "IF570-A",
+      "time": "08:00 - 11:30",
+      "room": "Lab Mobile"
+    }
+  ],
+  "Kamis": [],
+  "Jumat": [],
+  "Sabtu": [],
+  "Minggu": []
+}

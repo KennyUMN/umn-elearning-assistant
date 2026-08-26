@@ -1,0 +1,15 @@
+[Unit]
+Description=UMN E-Learning AI Assistant & Cron Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/umn-elearning-assistant
+ExecStart=/root/umn-elearning-assistant/venv/bin/python main.py
+Restart=always
+RestartSec=10
+Environment="TZ=Asia/Jakarta"
+
+[Install]
+WantedBy=multi-user.target

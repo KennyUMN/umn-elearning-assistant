@@ -1,0 +1,35 @@
+services:
+  umn-assistant:
+    build: .
+    image: umn-elearning-assistant:latest
+    container_name: umn-elearning-assistant
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Jakarta
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env
+    x-casaos:
+      envs:
+        - container: TZ
+          description:
+            en_us: Timezone
+          value: Asia/Jakarta
+
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  main: umn-assistant
+  title:
+    en_us: UMN E-Learning AI Assistant
+  description:
+    en_us: Otomatisasi E-Learning UMN, AI RAG Knowledge Base, Daily Morning Class Prep, dan Assignment Reminder via Telegram.
+  tagline:
+    en_us: AI Assistant & Moodle Auto-Sync untuk Mahasiswa UMN
+  category: Education
+  developer: Kenny
+  author: Kenny
+  icon: https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/moodle.png
