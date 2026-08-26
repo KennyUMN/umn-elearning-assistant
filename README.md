@@ -1,5 +1,7 @@
 # 🎓 UMN E-Learning Assistant (Telegram Bot + Cron Auto-Sync + AI RAG)
 
+![Demo](docs/demo.gif)
+
 Asisten pintar berbasis AI yang terhubung langsung ke **E-Learning Universitas Multimedia Nusantara (UMN)**, otomatis mengunduh materi kuliah (PDF, PPTX, Word), mengekstrak teks & slide, memantau deadline tugas, serta mengirimkan **Daily Morning Class Prep Briefing** dan **Assignment Reminder** langsung ke Telegram kamu.
 
 ---
