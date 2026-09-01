@@ -7,9 +7,13 @@ from src.config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
     MORNING_BRIEFING_TIME,
-    EVENING_REMINDER_TIME
+    EVENING_REMINDER_TIME,
+    AUTO_DO_ASSIGNMENTS,
+    AUTO_DO_ASSIGNMENTS_TIME,
+    AUTO_DO_MAX_PER_RUN
 )
 from src.ai_service import AIService
+from src.assignment_worker import AssignmentWorker
 from src.moodle_client import MoodleClient
 from src.document_parser import DocumentParser
 
@@ -37,6 +41,31 @@ def send_telegram_alert(text: str):
             logger.info("Telegram scheduled alert delivered successfully.")
     except Exception as e:
         logger.error(f"Error sending Telegram alert: {e}")
+
+def send_telegram_document(file_path, caption: str = ""):
+    """Kirim file (mis. hasil tugas .docx) ke Telegram chat."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("Telegram token or Chat ID not configured. Skipping document send.")
+        return False
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
+    try:
+        with open(file_path, "rb") as fh:
+            res = requests.post(
+                url,
+                data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption[:1000]},
+                files={"document": fh},
+                timeout=120
+            )
+        if res.status_code != 200:
+            logger.error(f"Failed to send Telegram document: {res.text[:300]}")
+            return False
+        logger.info(f"Telegram document sent: {file_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Error sending Telegram document: {e}")
+        return False
+
 
 def job_sync_elearning():
     """Job: Sync materials and assignments from E-Learning."""
@@ -70,6 +99,34 @@ def job_evening_assignment_reminder():
     ai_service = AIService()
     reminder = ai_service.generate_assignment_reminder()
     send_telegram_alert(reminder)
+
+def job_auto_do_assignments():
+    """Job: AI mengerjakan tugas pending yang belum pernah dikerjakan, kirim .docx ke Telegram untuk direview."""
+    if not AUTO_DO_ASSIGNMENTS:
+        return
+    logger.info("[CRON] Auto-do assignments: memeriksa tugas baru...")
+    try:
+        worker = AssignmentWorker()
+        pending = worker.list_pending()
+        done = set(worker.list_done_urls())
+        todo = [a for a in pending if a.get("url") not in done][:AUTO_DO_MAX_PER_RUN]
+
+        if not todo:
+            logger.info("[CRON] Tidak ada tugas baru yang perlu dikerjakan.")
+            return
+
+        send_telegram_alert(f"🤖 *Auto-Worker:* Ada *{len(todo)}* tugas baru. AI mulai mengerjakan — hasilnya dikirim untuk direview.")
+        for a in todo:
+            result = worker.work_on_assignment(a)
+            if result.get("ok"):
+                caption = f"📝 {a.get('course_name', '')} — {a.get('title', '')}\n🧠 {result.get('summary', '')[:600]}"
+                for f in result.get("files", []):
+                    send_telegram_document(f, caption)
+                send_telegram_alert("👀 File sudah dikirim. *Review dulu*, lalu kumpulkan manual ke e-learning ya!")
+            else:
+                send_telegram_alert(f"❌ Gagal mengerjakan _{a.get('title')}_: {result.get('error', '?')[:300]}")
+    except Exception as e:
+        logger.error(f"[CRON] Error auto-do assignments: {e}")
 
 def start_scheduler():
     """Start APScheduler in the background."""
@@ -108,6 +165,19 @@ def start_scheduler():
         id="elearning_sync",
         name="Auto Sync E-Learning Materials"
     )
+
+    # Auto-do assignments (AI kerjakan tugas baru, kirim .docx ke Telegram)
+    try:
+        a_hour, a_min = AUTO_DO_ASSIGNMENTS_TIME.split(":")
+        scheduler.add_job(
+            job_auto_do_assignments,
+            CronTrigger(hour=int(a_hour), minute=int(a_min)),
+            id="auto_do_assignments",
+            name="AI Auto-Do Assignments"
+        )
+        logger.info(f"Scheduled Auto-Do Assignments at {AUTO_DO_ASSIGNMENTS_TIME} WIB (aktif: {AUTO_DO_ASSIGNMENTS})")
+    except Exception as e:
+        logger.error(f"Invalid AUTO_DO_ASSIGNMENTS_TIME format: {e}")
 
     scheduler.start()
     return scheduler

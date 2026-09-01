@@ -1,6 +1,7 @@
 [Unit]
 Description=UMN E-Learning AI Assistant & Cron Service
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple

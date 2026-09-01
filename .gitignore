@@ -20,10 +20,16 @@ data/materials/*
 data/extracted_text/*
 !data/extracted_text/.gitkeep
 
-# Generated Metadata Cache
+# Generated Metadata Cache & Artifacts
 data/metadata/courses.json
 data/metadata/assignments.json
 data/metadata/sync_state.json
+data/metadata/assignment_outputs.json
+data/metadata/llm_state.json
+data/assignments_output/*
+!data/assignments_output/.gitkeep
+data/assignment_attachments/*
+!data/assignment_attachments/.gitkeep
 
 # Operating System & IDEs
 .DS_Store

@@ -19,7 +19,9 @@ from src.config import (
     ASSIGNMENTS_FILE,
     EXTRACTED_TEXT_DIR
 )
-from src.ai_service import AIService
+from src.ai_service import AIService, get_llm_state, set_llm_state, MODEL_PRESETS, VALID_PROVIDERS
+from src.config import OPENROUTER_API_KEY
+from src.assignment_worker import AssignmentWorker
 from src.moodle_client import MoodleClient
 from src.document_parser import DocumentParser
 
@@ -27,6 +29,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("telegram_bot")
 
 ai_service = AIService()
+assignment_worker = AssignmentWorker()
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -40,6 +43,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• 📋 `/tugas` - Cek daftar tugas & sisa waktu deadline\n"
         f"• 🔄 `/sync` - Tarik materi & tugas terbaru dari E-Learning UMN\n"
         f"• 📚 `/courses` - Cek daftar mata kuliah terdaftar\n"
+        f"• 📝 `/kerjakan` - AI kerjakan tugas & kirim file .docx siap review\n"
+        f"• 🤖 `/model` - Ganti provider/model LLM (Gemini / OpenRouter)\n"
         f"• ⚙️ `/id` - Cek Chat ID kamu (untuk konfigurasi `.env`)\n\n"
         f"💡 **Tanya Langsung:**\n"
         f"Kamu bisa langsung ketik pertanyaan apa saja di chat ini (contoh: _'Jelaskan materi pertemuan 1 Enterprise Architecture'_, _'Apa topik week 3 English 3?'_)."
@@ -53,6 +58,186 @@ async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Salin ID di atas dan masukkan ke file `.env` di baris `TELEGRAM_CHAT_ID={chat_id}` untuk menerima notifikasi otomatis harian.",
         parse_mode=ParseMode.MARKDOWN
     )
+
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lihat / ganti provider & model LLM yang aktif.
+    Pemakaian:
+      /model                     -> info provider & model aktif
+      /model gemini              -> pakai Gemini (default)
+      /model openrouter          -> pakai OpenRouter (default minimax/minimax-m3:free)
+      /model openrouter <model>  -> pakai model OpenRouter spesifik
+    """
+    args = context.args or []
+
+    if not args:
+        state = get_llm_state()
+        gemini_ready = "✅" if ai_service.is_configured() else "❌ (API key belum di-set)"
+        openrouter_ready = "✅" if OPENROUTER_API_KEY else "❌ (API key belum di-set)"
+        text = (
+            f"🤖 **LLM Aktif Saat Ini**\n"
+            f"• Provider: `{state['provider']}`\n"
+            f"• Model: `{state['model']}`\n\n"
+            f"**Provider tersedia:**\n"
+            f"1. `gemini` {gemini_ready}\n"
+            f"   Model: `{MODEL_PRESETS['gemini']['default']}`\n"
+            f"2. `openrouter` {openrouter_ready}\n"
+            f"   Model: `{MODEL_PRESETS['openrouter']['default']}`\n\n"
+            f"**Cara ganti:**\n"
+            f"• `/model gemini` — balik ke Gemini\n"
+            f"• `/model openrouter` — pakai MiniMax M3 (free) via OpenRouter\n"
+            f"• `/model openrouter <model_id>` — pakai model OpenRouter lain\n"
+            f"  contoh: `/model openrouter deepseek/deepseek-chat-v3.1:free`"
+        )
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        return
+
+    provider = args[0].strip().lower()
+    custom_model = args[1].strip() if len(args) > 1 else None
+
+    if provider not in VALID_PROVIDERS:
+        await update.message.reply_text(
+            f"❌ Provider `{provider}` tidak dikenal. Pilihan: `{', '.join(VALID_PROVIDERS)}`.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if provider == "openrouter" and not OPENROUTER_API_KEY:
+        await update.message.reply_text(
+            "⚠️ `OPENROUTER_API_KEY` belum diatur di file `.env`.\n\n"
+            "Ambil API key gratis di https://openrouter.ai/keys, lalu tambahkan ke `.env` dan restart service.\n"
+            "Sementara ini tetap pakai `/model gemini` ya.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    try:
+        state = set_llm_state(provider, custom_model)
+        await update.message.reply_text(
+            f"✅ **LLM berhasil diganti!**\n"
+            f"• Provider: `{state['provider']}`\n"
+            f"• Model: `{state['model']}`\n\n"
+            f"Semua fitur (briefing, reminder, AI tutor) sekarang pakai model ini — termasuk job cron otomatis. "
+            f"Pengaturan ini bertahan meski service di-restart.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Gagal ganti model: {e}")
+
+def _format_pending_list(pending) -> str:
+    lines = ["📝 **Tugas Pending (belum disubmit):**\n"]
+    for i, a in enumerate(pending, 1):
+        lines.append(
+            f"{i}. **{a.get('title', '-')}**\n"
+            f"   📚 {a.get('course_name', '-')} | ⏰ {a.get('due_date', '-')}"
+            f" (_{a.get('time_remaining', '-')}_)\n"
+        )
+    lines.append("\nKetik `/kerjakan <nomor>` biar AI kerjakan tugasnya,")
+    lines.append("atau `/kerjakan semua` (maks 3 tugas terdekat deadline).")
+    lines.append("\n⚠️ _Hasil dikirim sebagai file .docx untuk **direview dulu** — pengumpulan tetap kamu lakukan sendiri di e-learning._")
+    return "\n".join(lines)
+
+
+async def _send_assignment_result(update: Update, result: dict):
+    """Kirim file hasil + ringkasan ke chat Telegram."""
+    for fpath in result.get("files", []):
+        path = Path(fpath)
+        if not path.exists():
+            continue
+        caption = f"📄 {path.name}"
+        with open(path, "rb") as fh:
+            await update.message.reply_document(document=fh, filename=path.name, caption=caption)
+
+    summary = result.get("summary") or "(Tidak ada ringkasan dari AI.)"
+    attachments = result.get("attachments") or []
+    text = (
+        f"✅ **Tugas selesai dikerjakan AI!**\n\n"
+        f"📝 {result.get('assignment')}\n\n"
+        f"🧠 **Ringkasan pengerjaan:**\n{summary}\n\n"
+        f"📎 Sumber soal: {len(attachments)} lampiran" + (f" ({', '.join(attachments[:3])})" if attachments else "") + "\n\n"
+        f"👀 **Jangan lupa review sebelum dikumpulin ya!** File di atas tinggal kamu unduh, cek, lalu upload manual ke e-learning."
+    )
+    for chunk in [text[i:i + 4000] for i in range(0, len(text), 4000)]:
+        try:
+            await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await update.message.reply_text(chunk)
+
+
+async def kerjakan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """AI mengerjakan tugas e-learning & kirim file hasil ke Telegram untuk direview."""
+    args = context.args or []
+    pending = assignment_worker.list_pending()
+
+    if not pending:
+        await update.message.reply_text(
+            "🎉 **Tidak ada tugas pending yang terdeteksi!**\n\n"
+            "Coba `/sync` dulu kalau baru ada tugas yang di-upload dosen.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    # /kerjakan (tanpa argumen) -> daftar tugas pending
+    if not args:
+        await update.message.reply_text(_format_pending_list(pending), parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # /kerjakan semua -> kerjakan maks 3 tugas terdekat deadline
+    if args[0].lower() in ("semua", "all"):
+        targets = pending[:3]
+        await update.message.reply_text(
+            f"🤖 Oke, AI akan mengerjakan **{len(targets)} tugas** satu per satu.\n"
+            f"_Ini butuh waktu (±2 menit per tugas) — hasil dikirim bertahap._",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        for i, a in enumerate(targets, 1):
+            await update.message.reply_text(
+                f"⏳ *[{i}/{len(targets)}]* Mengambil soal & mengerjakan: _{a.get('title')}_...",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, assignment_worker.work_on_assignment, a)
+            if result.get("ok"):
+                await _send_assignment_result(update, result)
+            else:
+                await update.message.reply_text(f"❌ Gagal mengerjakan _{a.get('title')}_: {result.get('error')}")
+        return
+
+    # /kerjakan <nomor>
+    try:
+        idx = int(args[0]) - 1
+    except ValueError:
+        await update.message.reply_text("Format: `/kerjakan <nomor>` (lihat daftar di `/kerjakan`)", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if idx < 0 or idx >= len(pending):
+        await update.message.reply_text(f"❌ Nomor {args[0]} tidak ada. Cek daftar dengan `/kerjakan`.", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    assignment = pending[idx]
+    status_msg = await update.message.reply_text(
+        f"📥 *Mengambil soal & lampiran dari e-learning...*\n📝 _{assignment.get('title')}_",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+    loop = asyncio.get_running_loop()
+
+    def do_work():
+        return assignment_worker.work_on_assignment(assignment)
+
+    try:
+        await status_msg.edit_text(
+            f"🧠 *AI sedang mengerjakan tugas...*\n📝 _{assignment.get('title')}_\n\n_Esteksi 1-3 menit, jangan kemana-mana :)_",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        result = await loop.run_in_executor(None, do_work)
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Error saat mengerjakan tugas: {e}")
+        return
+
+    if result.get("ok"):
+        await _send_assignment_result(update, result)
+    else:
+        await status_msg.edit_text(f"❌ Gagal mengerjakan tugas: {result.get('error')}")
 
 async def briefing_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("☕ *Sedang meracik briefing persiapan kuliah hari ini...*", parse_mode=ParseMode.MARKDOWN)
@@ -149,6 +334,8 @@ def create_bot_app():
     app.add_handler(CommandHandler("briefing", briefing_command))
     app.add_handler(CommandHandler("tugas", tugas_command))
     app.add_handler(CommandHandler("courses", courses_command))
+    app.add_handler(CommandHandler("kerjakan", kerjakan_command))
+    app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("sync", sync_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 

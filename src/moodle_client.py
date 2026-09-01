@@ -14,7 +14,8 @@ from src.config import (
     MATERIALS_DIR,
     COURSES_FILE,
     ASSIGNMENTS_FILE,
-    SYNC_STATE_FILE
+    SYNC_STATE_FILE,
+    ASSIGNMENTS_ATTACH_DIR
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -22,7 +23,9 @@ logger = logging.getLogger("moodle_client")
 
 class MoodleClient:
     def __init__(self, base_url: str = UMN_BASE_URL, username: str = UMN_USERNAME, password: str = UMN_PASSWORD):
-        self.base_url = base_url.rstrip("/")
+        # Sanitize base URL in case /dashboard was passed
+        clean_base = re.sub(r"/dashboard/?$", "", base_url.strip()).rstrip("/")
+        self.base_url = clean_base
         self.username = username
         self.password = password
         self.session = requests.Session()
@@ -90,7 +93,7 @@ class MoodleClient:
             return False
 
     def get_enrolled_courses(self) -> List[Dict[str, Any]]:
-        """Fetch list of enrolled courses from dashboard, profile, or calendar."""
+        """Fetch list of all enrolled courses via Moodle AJAX service and HTML fallback."""
         if not self.is_logged_in:
             if not self.login():
                 return []
@@ -98,22 +101,62 @@ class MoodleClient:
         courses = []
         seen_ids = set()
 
+        # Step 1: Attempt Moodle Timeline / Course Overview AJAX
+        # This returns ALL enrolled courses regardless of pagination or card limits
+        res = self.session.get(f"{self.base_url}/my/", timeout=20)
+        sesskey_match = re.search(r"\"sesskey\":\"([^\"]+)\"", res.text)
+        sesskey = sesskey_match.group(1) if sesskey_match else ""
+
+        if sesskey:
+            ajax_classifications = ["all", "allincludinghidden", "inprogress", "future", "past"]
+            for clf in ajax_classifications:
+                try:
+                    ajax_url = f"{self.base_url}/lib/ajax/service.php?sesskey={sesskey}&info=core_course_get_enrolled_courses_by_timeline_classification"
+                    payload = [{
+                        "index": 0,
+                        "methodname": "core_course_get_enrolled_courses_by_timeline_classification",
+                        "args": {
+                            "offset": 0,
+                            "limit": 100,
+                            "classification": clf,
+                            "sort": "fullname"
+                        }
+                    }]
+                    ares = self.session.post(ajax_url, json=payload, timeout=20)
+                    if ares.status_code == 200:
+                        data = ares.json()
+                        raw_courses = data[0].get("data", {}).get("courses", [])
+                        for rc in raw_courses:
+                            cid = str(rc.get("id"))
+                            fn = rc.get("fullname") or rc.get("shortname") or ""
+                            if cid and cid not in seen_ids and len(fn) > 3:
+                                seen_ids.add(cid)
+                                courses.append({
+                                    "id": cid,
+                                    "title": fn,
+                                    "url": f"{self.base_url}/course/view.php?id={cid}",
+                                    "clean_name": self.sanitize_filename(fn)
+                                })
+                except Exception as e:
+                    logger.warning(f"Error during AJAX course retrieval ({clf}): {e}")
+
+        # Step 2: Fallback & additional HTML scan from multiple Moodle endpoints
         urls_to_try = [
             f"{self.base_url}/dashboard/",
             f"{self.base_url}/dashboard",
             f"{self.base_url}/my/",
+            f"{self.base_url}/my/courses.php",
             f"{self.base_url}/user/profile.php",
             f"{self.base_url}/"
         ]
 
-        # First check cached dashboard HTML from login
-        sources = [self.dashboard_html] if self.dashboard_html else []
+        sources = [self.dashboard_html, res.text] if self.dashboard_html else [res.text]
 
         for url in urls_to_try:
             try:
-                res = self.session.get(url, timeout=20)
-                if res.status_code == 200:
-                    sources.append(res.text)
+                hres = self.session.get(url, timeout=20)
+                if hres.status_code == 200:
+                    sources.append(hres.text)
             except Exception:
                 pass
 
@@ -124,7 +167,7 @@ class MoodleClient:
                 href = link.get("href", "")
                 match = re.search(r"id=(\d+)", href)
                 if match:
-                    cid = match.group(1)
+                    cid = str(match.group(1))
                     title = link.get_text(strip=True)
                     if cid not in seen_ids and title and len(title) > 3 and title.lower() != "view" and not title.isdigit():
                         seen_ids.add(cid)
@@ -254,6 +297,73 @@ class MoodleClient:
             logger.warning(f"Failed downloading folder activity {folder_url}: {e}")
 
         return files
+
+    def get_assignment_details(self, assign_url: str, course_name: str = "", title: str = "") -> Dict[str, Any]:
+        """Ambil detail tugas dari halaman mod/assign: deskripsi/instruksi, jenis submission,
+        dan unduh lampiran soal (PDF/DOCX/dll) ke data/assignment_attachments/."""
+        if not self.is_logged_in:
+            if not self.login():
+                return {"description": "", "attachments": [], "submission_types": ""}
+
+        safe_course = self.sanitize_filename(course_name or "Umum")
+        safe_title = self.sanitize_filename(title or "Tugas")
+        attach_dir = ASSIGNMENTS_ATTACH_DIR / safe_course / safe_title
+        attach_dir.mkdir(parents=True, exist_ok=True)
+
+        details = {"description": "", "attachments": [], "submission_types": ""}
+
+        try:
+            res = self.session.get(assign_url, timeout=25)
+            soup = BeautifulSoup(res.text, "html.parser")
+
+            # 1) Jenis submission (online text / file)
+            for row in soup.find_all("tr"):
+                text = row.get_text()
+                if "Submission types" in text or "Jenis pengajuan" in text:
+                    tds = row.find_all("td")
+                    if tds:
+                        details["submission_types"] = tds[-1].get_text(" ", strip=True)
+
+            # 2) Deskripsi / intro tugas (container standar Moodle assign)
+            intro = soup.select_one("div.no-overflow")
+            if intro is None:
+                intro = soup.select_one("[class*='boxgeneralsection']")
+            if intro is None:
+                intro = soup.select_one("[id^='intro']")
+            if intro is None:
+                intro = soup.select_one("div[role='main']")
+
+            if intro is not None:
+                # Buang tabel status & elemen form supaya deskripsi bersih
+                for t in intro.find_all("table"):
+                    t.decompose()
+                for form in intro.find_all(["form", "button"]):
+                    form.decompose()
+                desc = intro.get_text("\n", strip=True)
+                details["description"] = re.sub(r"\n{3,}", "\n\n", desc)[:9000]
+
+            # 3) Lampiran soal (file yang di-link di area intro)
+            scope = intro if intro is not None else soup
+            seen = set()
+            for link in scope.find_all("a", href=re.compile(r"pluginfile\.php")):
+                href = link.get("href", "")
+                if not href or href in seen:
+                    continue
+                seen.add(href)
+                fname = link.get_text(strip=True)
+                if not fname:
+                    fname = urllib.parse.unquote(Path(urllib.parse.urlparse(href).path).name) or "lampiran"
+                file_info = self._download_resource(href, fname, attach_dir)
+                if file_info:
+                    details["attachments"].append(file_info)
+
+            logger.info(f"Detail tugas '{safe_title}': deskripsi {len(details['description'])} karakter, "
+                        f"{len(details['attachments'])} lampiran")
+
+        except Exception as e:
+            logger.warning(f"Gagal mengambil detail tugas {assign_url}: {e}")
+
+        return details
 
     def get_assignments(self, courses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Scrape assignments across all courses and check deadlines & submission status."""

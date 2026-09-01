@@ -1,42 +1,74 @@
 {
   "Senin": [
     {
-      "course": "Technopreneurship",
+      "course": "Technopreneurship - Lecture",
       "code": "EM105-B",
-      "time": "08:00 - 10:30",
-      "room": "B.501"
-    },
-    {
-      "course": "Information Technology Research",
-      "code": "IF590-B",
-      "time": "11:00 - 13:30",
-      "room": "C.302"
+      "time": "14:00 - 17:00",
+      "room": "Campus 1, D Building D0810"
     }
   ],
   "Selasa": [
     {
-      "course": "Deep Learning",
+      "course": "Deep Learning - Lecture",
       "code": "IF542-A",
-      "time": "08:00 - 10:30",
-      "room": "Lab Komputer"
+      "time": "08:30 - 11:30",
+      "room": "Campus 1, C Building C0308"
     },
     {
-      "course": "Cybersecurity",
-      "code": "IF571-B",
-      "time": "11:00 - 13:30",
-      "room": "D.401"
+      "course": "English 3 - Lecture",
+      "code": "UM321-B",
+      "time": "13:00 - 15:00",
+      "room": "Campus 1, C Building C0706"
     }
   ],
   "Rabu": [
     {
-      "course": "Mobile Application Programming",
-      "code": "IF570-A",
-      "time": "08:00 - 11:30",
-      "room": "Lab Mobile"
+      "course": "Information Technology Research - Lecture",
+      "code": "IF590-B",
+      "time": "08:30 - 10:30",
+      "room": "Campus 1, C Building C0308"
     }
   ],
-  "Kamis": [],
-  "Jumat": [],
+  "Kamis": [
+    {
+      "course": "Mobile Application Programming - Lecture",
+      "code": "IF570-A",
+      "time": "08:00 - 10:00",
+      "room": "Campus 1, D Building D0807"
+    },
+    {
+      "course": "Mobile Application Programming - Laboratory",
+      "code": "IF570-AL",
+      "time": "10:00 - 12:00",
+      "room": "Campus 1, D Building D0508"
+    },
+    {
+      "course": "Game Development - Lecture",
+      "code": "IF581-F",
+      "time": "13:00 - 15:00",
+      "room": "Campus 1, C Building C0907"
+    },
+    {
+      "course": "Game Development - Laboratory",
+      "code": "IF581-FL",
+      "time": "15:00 - 17:00",
+      "room": "Campus 1, C Building C0710"
+    }
+  ],
+  "Jumat": [
+    {
+      "course": "Cybersecurity - Lecture (dipindahkan dari Sabtu)",
+      "code": "IF571-F",
+      "time": "08:30 - 11:30",
+      "room": "Campus 1, C Building C0807"
+    },
+    {
+      "course": "AI for Strategic Communication - Lecture",
+      "code": "MSC5233-A-EN",
+      "time": "13:00 - 16:00",
+      "room": "Campus 1, D Building D0609"
+    }
+  ],
   "Sabtu": [],
   "Minggu": []
 }
