@@ -10,6 +10,9 @@ services:
       - TZ=Asia/Jakarta
     volumes:
       - ./data:/app/data
+      - ./src:/app/src
+      - ./main.py:/app/main.py
+      - ./sync.py:/app/sync.py
       - ./.env:/app/.env
     x-casaos:
       envs:
