@@ -232,11 +232,28 @@ class AIService:
         context_blocks = []
         total_len = 0
 
+        # Step 0: Always include the enrolled courses summary
+        enrolled_summary = ""
+        if COURSES_FILE.exists():
+            try:
+                courses_data = json.loads(COURSES_FILE.read_text(encoding="utf-8"))
+                course_titles = [c.get("title") for c in courses_data if c.get("title")]
+                if course_titles:
+                    enrolled_summary = (
+                        "=== DAFTAR SEMUA MATA KULIAH TERDAFTAR SEMESTER INI ===\n"
+                        + "\n".join(f"- {t}" for t in course_titles)
+                        + "\n=======================================================\n\n"
+                    )
+                    context_blocks.append(enrolled_summary)
+                    total_len += len(enrolled_summary)
+            except Exception as e:
+                logger.warning(f"Error loading courses in context: {e}")
+
         target_code = self._detect_target_course(query) if query else None
 
         course_dirs = [d for d in EXTRACTED_TEXT_DIR.iterdir() if d.is_dir()]
         if not course_dirs:
-            return "Belum ada dokumen materi yang diekstrak."
+            return enrolled_summary + "Belum ada dokumen materi yang diekstrak." if enrolled_summary else "Belum ada dokumen materi yang diekstrak."
 
         candidate_files = []
         for cdir in course_dirs:
@@ -272,7 +289,7 @@ class AIService:
                         score += 50
                     score += 1
 
-                if any(w in query.lower() for w in ["ngapain", "semester", "silabus", "rpkps", "jadwal", "materi"]):
+                if any(w in query.lower() for w in ["ngapain", "semester", "silabus", "rpkps", "jadwal", "materi", "semua", "daftar"]):
                     if "rpkps" in stem_lower or "guideline" in stem_lower:
                         score += 200
 
@@ -282,22 +299,40 @@ class AIService:
 
         scored_files.sort(key=lambda x: x[0], reverse=True)
 
-        for score, file_path, content in scored_files:
-            if target_code and score < 0:
-                continue
+        # If no specific target course, ensure balanced representation across all courses
+        if not target_code:
+            per_course_limit = max_chars // max(1, len(course_dirs))
+            course_used = {}
+            for score, file_path, content in scored_files:
+                course_name = file_path.parent.name
+                doc_name = file_path.name
+                cur_used = course_used.get(course_name, 0)
+                if cur_used >= per_course_limit:
+                    continue
 
-            course_name = file_path.parent.name
-            doc_name = file_path.name
+                piece = content[:per_course_limit - cur_used]
+                context_blocks.append(f"=== MATA KULIAH: {course_name} ===\n=== DOKUMEN: {doc_name} ===\n{piece}")
+                course_used[course_name] = cur_used + len(piece)
+                total_len += len(piece)
+                if total_len >= max_chars:
+                    break
+        else:
+            for score, file_path, content in scored_files:
+                if score < 0:
+                    continue
 
-            if total_len + len(content) > max_chars:
-                remaining = max_chars - total_len
-                if remaining > 1000:
-                    snippet = content[:remaining]
-                    context_blocks.append(f"=== MATA KULIAH: {course_name} ===\n=== DOKUMEN: {doc_name} ===\n{snippet}\n[TRUNCATED...]")
-                break
-            else:
-                context_blocks.append(f"=== MATA KULIAH: {course_name} ===\n=== DOKUMEN: {doc_name} ===\n{content}")
-                total_len += len(content)
+                course_name = file_path.parent.name
+                doc_name = file_path.name
+
+                if total_len + len(content) > max_chars:
+                    remaining = max_chars - total_len
+                    if remaining > 1000:
+                        snippet = content[:remaining]
+                        context_blocks.append(f"=== MATA KULIAH: {course_name} ===\n=== DOKUMEN: {doc_name} ===\n{snippet}\n[TRUNCATED...]")
+                    break
+                else:
+                    context_blocks.append(f"=== MATA KULIAH: {course_name} ===\n=== DOKUMEN: {doc_name} ===\n{content}")
+                    total_len += len(content)
 
         return "\n\n".join(context_blocks)
 
