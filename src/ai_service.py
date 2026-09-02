@@ -34,10 +34,12 @@ VALID_PROVIDERS = ("gemini", "openrouter")
 # Preset model yang bisa dipilih via perintah /model di Telegram
 MODEL_PRESETS = {
     "gemini": {
-        "default": "gemini-flash-lite-latest (auto-fallback)",
+        "default": "gemini-3.7-flash (auto-fallback)",
         "options": [
+            "gemini-3.7-flash",
             "gemini-flash-lite-latest",
-            "gemini-flash-latest",
+            "gemini-3.1-flash-lite",
+            "gemini-3.6-flash",
             "gemini-2.5-flash",
             "gemini-2.5-pro"
         ]
@@ -120,8 +122,9 @@ class AIService:
     def __init__(self, api_key: str = GEMINI_API_KEY):
         self.api_key = api_key
         self.client = genai.Client(api_key=self.api_key) if self.api_key else None
-        # Ultra-fast low-latency models (~1.5s response)
+        # Default model is Gemini 3.7 Flash, with automatic fast fallback chain
         self.models_to_try = [
+            "models/gemini-3.7-flash",
             "models/gemini-flash-lite-latest",
             "models/gemini-3.1-flash-lite",
             "models/gemini-3.6-flash"
@@ -158,16 +161,26 @@ class AIService:
                 )
             return self._generate_openrouter(prompt, model)
 
-        # Provider: gemini (default)
-        return self._generate_gemini(prompt)
+        # Provider: gemini (default: gemini-3.7-flash with auto-fallback)
+        return self._generate_gemini(prompt, requested_model=model)
 
-    def _generate_gemini(self, prompt: str) -> str:
-        """Attempt generation with ultra-fast Gemini models and fallback."""
+    def _generate_gemini(self, prompt: str, requested_model: Optional[str] = None) -> str:
+        """Attempt generation with Gemini 3.7 Flash as default and fallback to other models."""
         if not self.is_configured():
             return "⚠️ Gemini API Key belum diatur di file `.env`."
 
-        # Kalau GEMINI_MODEL di-set di .env, coba model itu duluan
-        chain = ([f"models/{GEMINI_MODEL}"] if GEMINI_MODEL and not GEMINI_MODEL.startswith("models/") else ([GEMINI_MODEL] if GEMINI_MODEL else [])) + self.models_to_try
+        primary = requested_model or GEMINI_MODEL
+        if primary and "auto-fallback" in primary:
+            primary = primary.split()[0]
+
+        chain = []
+        if primary:
+            formatted_primary = primary if primary.startswith("models/") else f"models/{primary}"
+            chain.append(formatted_primary)
+
+        for m in self.models_to_try:
+            if m not in chain:
+                chain.append(m)
 
         last_error = None
         for model in chain:
@@ -180,7 +193,7 @@ class AIService:
                     return response.text
             except Exception as e:
                 last_error = e
-                logger.warning(f"Model {model} failed ({e}), trying next model...")
+                logger.warning(f"Model {model} failed ({e}), trying next fallback model...")
 
         return f"❌ Gagal memproses permintaan AI (gemini): {str(last_error)}"
 
