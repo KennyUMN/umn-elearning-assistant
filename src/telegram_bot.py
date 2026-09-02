@@ -300,27 +300,42 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Error saat sync: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_query = update.message.text
+    user_query = update.message.text if update.message else ""
     if not user_query or user_query.startswith("/"):
         return
 
-    # Send typing action
-    await update.message.chat.send_action("typing")
+    logger.info(f"Received user query: {user_query[:60]}")
 
-    loop = asyncio.get_running_loop()
-    answer = await loop.run_in_executor(None, ai_service.answer_query, user_query)
+    try:
+        # Send typing action
+        await update.message.chat.send_action("typing")
 
-    # Chunk response if message is too long for Telegram (limit 4096 chars)
-    if len(answer) > 4000:
-        chunks = [answer[i:i+4000] for i in range(0, len(answer), 4000)]
-        for chunk in chunks:
-            await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
-    else:
+        loop = asyncio.get_running_loop()
+        answer = await loop.run_in_executor(None, ai_service.answer_query, user_query)
+
+        if not answer:
+            answer = "ℹ️ Maaf, tidak ada respons yang dihasilkan."
+
+        # Chunk response if message is too long for Telegram (limit 4096 chars)
+        if len(answer) > 4000:
+            chunks = [answer[i:i+4000] for i in range(0, len(answer), 4000)]
+            for chunk in chunks:
+                try:
+                    await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    await update.message.reply_text(chunk)
+        else:
+            try:
+                await update.message.reply_text(answer, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                # Fallback to plain text if markdown parsing fails
+                await update.message.reply_text(answer)
+    except Exception as e:
+        logger.exception(f"Error handling user message: {e}")
         try:
-            await update.message.reply_text(answer, parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(f"❌ Terjadi kesalahan saat memproses pertanyaan: {e}")
         except Exception:
-            # Fallback to plain text if markdown parsing fails
-            await update.message.reply_text(answer)
+            pass
 
 def create_bot_app():
     if not TELEGRAM_BOT_TOKEN:
