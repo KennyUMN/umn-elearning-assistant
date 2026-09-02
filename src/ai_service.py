@@ -627,27 +627,54 @@ Gunakan gaya bahasa santai mahasiswa-friendly dan formatting Markdown Telegram y
             return f"❌ Terjadi kesalahan saat membaca daftar tugas: {e}"
 
     def answer_query(self, user_question: str) -> str:
-        """Answer user's question about lecture materials, guidelines, and courses."""
+        """Answer user's question with a proactive, insightful, and supportive AI tutor persona."""
         context = self._get_relevant_context(query=user_question, max_chars=35000)
 
-        prompt = f"""
-Kamu adalah Asisten AI Perkuliahan UMN (Universitas Multimedia Nusantara).
-Tugasmu adalah menjawab pertanyaan mahasiswa berdasarkan materi kuliah, RPKPS, guideline, dan slide presentasi yang telah disinkronkan dari E-Learning UMN.
+        # Check for any pending assignments to provide proactive alerts if relevant
+        assignments_alert = ""
+        if ASSIGNMENTS_FILE.exists():
+            try:
+                assignments = json.loads(ASSIGNMENTS_FILE.read_text(encoding="utf-8"))
+                pending = [a for a in assignments if not a.get("is_submitted")]
+                target_code = self._detect_target_course(user_question)
+                if target_code:
+                    course_pending = [p for p in pending if target_code.lower() in p.get("course_name", "").lower()]
+                    if course_pending:
+                        assignments_alert = "\n[INFO TUGAS PENDING UNTUK MATA KULIAH INI]\n" + "\n".join(
+                            f"- {p.get('title')} (Deadline: {p.get('due_date')} | Sisa waktu: {p.get('time_remaining')})"
+                            for p in course_pending
+                        )
+            except Exception:
+                pass
 
-=== ATURAN PENTING ===
-1. Perhatikan baik-baik nama mata kuliah yang ditanyakan mahasiswa (contoh: RTI = Riset Teknologi Informasi / IF590, bukan Technopreneurship).
-2. Jawab HANYA berdasarkan dokumen mata kuliah yang relevan dengan pertanyaan. JANGAN mencampuradukkan materi antar mata kuliah yang berbeda.
-3. Sebutkan nama mata kuliah dan kode mata kuliah secara jelas di awal jawaban.
+        prompt = f"""
+Kamu adalah AI Asisten & Study Partner Pintar Mahasiswa Universitas Multimedia Nusantara (UMN).
+Kamu memiliki kepribadian yang **proaktif, suportif, berinisiatif tinggi, dan solutif** (seperti kakak tingkat atau mentor pintar yang selalu satu langkah lebih maju).
 
 === KONTEKS MATERI KULIAH DARI E-LEARNING ===
 {context}
+{assignments_alert}
 
 === PERTANYAAN MAHASISWA ===
 {user_question}
 
-Panduan Jawaban:
-- Jawab dengan ramah, akurat, to the point, dan terstruktur.
-- Jika ada tabel mingguan / roadmap / poin-poin penting, sajikan dengan rapi (Week 1 s.d. Week 14, UTS, UAS, Komponen Penilaian).
-- Jika informasi tidak ditemukan di dokumen, sampaikan terus terang bahwa materi tersebut belum ada di file yang diunduh.
+=== PANDUAN MENJAWAB PROAKTIF ===
+1. **Akurat & Berdasarkan Fakta**:
+   - Sebutkan nama mata kuliah dan kode mata kuliah secara jelas di awal jawaban jika pertanyaan spesifik ke suatu matkul.
+   - Jawab berdasarkan dokumen materi/RPKPS yang tersedia. Jika informasi detail tertentu belum ada di slide, katakan dengan jujur dan berikan insight umum yang relevan.
+
+2. **Proactive Value-Add (Inisiatif & Persiapan)**:
+   - Jangan hanya menjawab secara pasif atau singkat!
+   - Berikan **Tips Persiapan / Actionable Advice**: Apa yang sebaiknya dipersiapkan mahasiswa (contoh: tools/software yang perlu di-install, konsep dasar yang perlu dipahami dulu, slide/referensi yang perlu dibaca).
+   - Hubungkan topik ini dengan relevansi praktiknya (kenapa materi ini penting di dunia industri / skripsi).
+
+3. **Tawaran Bantuan Lanjutan (Actionable Next Steps)**:
+   - Di akhir jawaban, **SELALU** tawarkan 2-3 opsi kelanjutan yang spesifik dan menarik agar mahasiswa bisa langsung memilih, contoh:
+     - 📌 *1. Rangkuman intisari / cheat sheet poin-poin krusial materi ini*
+     - 📌 *2. Latihan soal / kuis kilat 3 pertanyaan untuk uji pemahaman*
+     - 📌 *3. Penjelasan roadmap / materi pertemuan berikutnya*
+     - *(atau tawarkan bantuan kerjakan tugas jika ada tugas terkait)*
+
+Format jawaban menggunakan Markdown Telegram yang rapi, terstruktur (bold, bullet points, emoji yang pas), dan komunikatif.
 """
         return self._generate_with_fallback(prompt)
