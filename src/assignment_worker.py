@@ -21,6 +21,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt
 
 from src.ai_service import AIService
+from src.anti_slop import ANTI_SLOP_SYSTEM_INSTRUCTIONS, sanitize_sections_slop, clean_text_slop
 from src.config import (
     ASSIGNMENTS_ATTACH_DIR,
     ASSIGNMENTS_OUTPUT_DIR,
@@ -173,8 +174,8 @@ class AssignmentWorker:
     def _build_prompt(self, assignment: Dict[str, Any], description: str,
                       attachment_text: str, context: str) -> str:
         name, nim = self._student_name(), self._student_nim()
-        return f"""Kamu adalah mahasiswa UMN bernama {name} (NIM {nim}) yang rajin dan pandai.
-Kerjakan tugas kuliah berikut SEBAIK MUNGKIN dan SESUAI FORMAT YANG DIMINTA SOAL.
+        return f"""Kamu adalah mahasiswa UMN bernama {name} (NIM {nim}) yang cerdas, berpikiran kritis, dan menguasai materi teknis.
+Kerjakan tugas kuliah berikut SEBAIK MUNGKIN, DENGAN KEDALAMAN AKADEMIS TINGGI, dan SESUAI FORMAT YANG DIMINTA SOAL.
 
 === IDENTITAS TUGAS ===
 Mata Kuliah : {assignment.get('course_name', '-')}
@@ -190,26 +191,25 @@ Deadline    : {assignment.get('due_date', '-')}
 === MATERI KULIAH RELEVAN ===
 {context}
 
-=== ATURAN PENGERJAAN ===
+{ANTI_SLOP_SYSTEM_INSTRUCTIONS}
+
+=== ATURAN PENGERJAAN TEKNIS ===
 1. Ikuti SEMUA instruksi & format dari soal: struktur bab/bagian, jumlah kata/kalimat, bahasa
-   (kalau soal tidak menyebutkan bahasa, pakai Bahasa Indonesia akademik yang rapi).
-2. Jawaban harus spesifik ke materi kuliah ini — kutip konsep/istilah dari materi, jangan
-   jawaban generik template.
-3. JANGAN mengarang data statistik, kutipan buku, atau sumber referensi palsu. Kalau butuh
-   referensi, gunakan materi kuliah yang diberikan.
-4. Kalau soal meminta kode program, tulis kode yang benar dan lengkap di field "code" bagian
-   terkait, plus penjelasan singkat di "paragraphs".
+   (kalau soal tidak menyebutkan bahasa, pakai Bahasa Indonesia akademik yang padat, lugas, dan bebas klise).
+2. Jawaban harus mendalam dan spesifik ke materi kuliah ini — kutip konsep, algoritma, rumus, atau mekanisme teknis nyata dari materi. HINDARI jawaban generik permukaan.
+3. JANGAN mengarang data statistik, kutipan buku, atau sumber referensi palsu. Gunakan materi kuliah yang diberikan atau rujukan ilmiah terpercaya.
+4. Kalau soal meminta kode program, tulis kode yang fungsional, bersih, dan lengkap di field "code" bagian terkait, plus penjelasan singkat di "paragraphs".
 5. Keluarkan HANYA JSON valid (tanpa teks lain, tanpa ```json fence) dengan struktur persis:
 {{
-  "summary": "ringkasan 3-5 kalimat: apa yang dikerjakan dan bagaimana strukturnya",
+  "summary": "ringkasan 3-5 kalimat lugas: apa yang dikerjakan dan metodologinya",
   "files": [
     {{
       "filename": "Tugas - <judul singkat>.docx",
       "sections": [
         {{
           "heading": "Judul Bagian 1",
-          "paragraphs": ["paragraf isi..."],
-          "bullets": ["poin 1", "poin 2"],
+          "paragraphs": ["paragraf isi analitis dan padat..."],
+          "bullets": ["poin 1 konkret", "poin 2 konkret"],
           "code": "kode program bila ada, string biasa dengan \\n untuk baris baru, atau string kosong"
         }}
       ]
@@ -335,6 +335,9 @@ Jangan pakai markdown (**, ##) di dalam teks — sudah diformat otomatis jadi do
             tmp_dir.mkdir(parents=True, exist_ok=True)
 
             for f_spec in spec.get("files", []):
+                # Clean any lingering AI slop phrases from sections
+                if "sections" in f_spec:
+                    f_spec["sections"] = sanitize_sections_slop(f_spec.get("sections", []))
                 fname = self._safe_name(f_spec.get("filename") or f"{title}.docx")
                 if not fname.lower().endswith(".docx"):
                     fname += ".docx"
@@ -354,7 +357,7 @@ Jangan pakai markdown (**, ##) di dalam teks — sudah diformat otomatis jadi do
             result.update({
                 "ok": True,
                 "files": [str(p) for p in out_files],
-                "summary": spec.get("summary", ""),
+                "summary": clean_text_slop(spec.get("summary", "")),
                 "description_found": bool(details.get("description")),
                 "attachments": [Path(a["path"]).name for a in details.get("attachments", [])]
             })
