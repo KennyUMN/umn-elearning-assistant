@@ -526,16 +526,11 @@ class AIService:
 
         # --- Muat tugas pending ---
         assignments_summary = ""
-        if ASSIGNMENTS_FILE.exists():
-            try:
-                assignments = json.loads(ASSIGNMENTS_FILE.read_text(encoding="utf-8"))
-                pending = [a for a in assignments if not a.get("is_submitted")]
-                if pending:
-                    assignments_summary = "Daftar Tugas Pending / Belum Selesai:\n"
-                    for p in pending[:5]:
-                        assignments_summary += f"- [{p.get('course_name')}] {p.get('title')} | Deadline: {p.get('due_date')} ({p.get('time_remaining')})\n"
-            except Exception as e:
-                logger.warning(f"Error loading assignments: {e}")
+        pending = self._load_pending_assignments()
+        if pending:
+            assignments_summary = "Daftar Tugas Pending / Belum Selesai:\n"
+            for p in pending[:5]:
+                assignments_summary += f"- [{p.get('course_name')}] {p.get('title')} | Deadline: {p.get('due_date')} ({p.get('time_remaining')})\n"
 
         # --- Hari tanpa kelas: jangan halusinasi, langsung balas singkat ---
         if not today_classes:
@@ -594,14 +589,53 @@ Gunakan gaya bahasa santai mahasiswa-friendly dan formatting Markdown Telegram y
 """
         return self._generate_with_fallback(prompt)
 
+    def _load_pending_assignments(self) -> List[Dict[str, Any]]:
+        """Load and defensively deduplicate pending assignments from ASSIGNMENTS_FILE."""
+        if not ASSIGNMENTS_FILE.exists():
+            return []
+
+        try:
+            raw = json.loads(ASSIGNMENTS_FILE.read_text(encoding="utf-8"))
+            seen_keys = set()
+            unique_pending = []
+
+            for a in raw:
+                if not a or a.get("is_submitted"):
+                    continue
+
+                url = a.get("url", "")
+                m = re.search(r'[?&]id=(\d+)', url)
+                assign_id = m.group(1) if m else url
+
+                title = a.get("title", "").strip()
+                if title.endswith("Assignment") and len(title) > len("Assignment") and not title.lower().startswith("assignment"):
+                    title = title[:-len("Assignment")].strip()
+                elif title.endswith("Tugas") and len(title) > len("Tugas") and not title.lower().startswith("tugas"):
+                    title = title[:-len("Tugas")].strip()
+
+                cname = a.get("course_name", "").strip()
+                key = assign_id if assign_id else (cname, title)
+
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+
+                item = dict(a)
+                item["title"] = title
+                unique_pending.append(item)
+
+            return unique_pending
+        except Exception as e:
+            logger.warning(f"Error loading pending assignments: {e}")
+            return []
+
     def generate_assignment_reminder(self) -> str:
         """Generate a focused reminder message for pending assignments."""
         if not ASSIGNMENTS_FILE.exists():
             return "ℹ️ Belum ada data tugas. Silakan jalankan `/sync` terlebih dahulu."
 
         try:
-            assignments = json.loads(ASSIGNMENTS_FILE.read_text(encoding="utf-8"))
-            pending = [a for a in assignments if not a.get("is_submitted")]
+            pending = self._load_pending_assignments()
 
             if not pending:
                 return "🎉 **Hore! Semua tugas e-learning sudah beres / tidak ada tugas pending saat ini.** Tetap santai dan pertahankan! 🚀"
@@ -632,20 +666,16 @@ Gunakan gaya bahasa santai mahasiswa-friendly dan formatting Markdown Telegram y
 
         # Check for any pending assignments to provide proactive alerts if relevant
         assignments_alert = ""
-        if ASSIGNMENTS_FILE.exists():
-            try:
-                assignments = json.loads(ASSIGNMENTS_FILE.read_text(encoding="utf-8"))
-                pending = [a for a in assignments if not a.get("is_submitted")]
-                target_code = self._detect_target_course(user_question)
-                if target_code:
-                    course_pending = [p for p in pending if target_code.lower() in p.get("course_name", "").lower()]
-                    if course_pending:
-                        assignments_alert = "\n[INFO TUGAS PENDING UNTUK MATA KULIAH INI]\n" + "\n".join(
-                            f"- {p.get('title')} (Deadline: {p.get('due_date')} | Sisa waktu: {p.get('time_remaining')})"
-                            for p in course_pending
-                        )
-            except Exception:
-                pass
+        pending = self._load_pending_assignments()
+        if pending:
+            target_code = self._detect_target_course(user_question)
+            if target_code:
+                course_pending = [p for p in pending if target_code.lower() in p.get("course_name", "").lower()]
+                if course_pending:
+                    assignments_alert = "\n[INFO TUGAS PENDING UNTUK MATA KULIAH INI]\n" + "\n".join(
+                        f"- {p.get('title')} (Deadline: {p.get('due_date')} | Sisa waktu: {p.get('time_remaining')})"
+                        for p in course_pending
+                    )
 
         prompt = f"""
 Kamu adalah AI Asisten & Study Partner Pintar Mahasiswa Universitas Multimedia Nusantara (UMN).

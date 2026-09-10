@@ -72,12 +72,39 @@ class AssignmentWorker:
 
     # ---------------------------------------------------------------- state
     def list_pending(self) -> List[Dict[str, Any]]:
-        """Tugas pending (belum disubmit) dari assignments.json."""
+        """Tugas pending (belum disubmit) dari assignments.json (ter-deduplikasi)."""
         if not ASSIGNMENTS_FILE.exists():
             return []
         try:
             assignments = json.loads(ASSIGNMENTS_FILE.read_text(encoding="utf-8"))
-            return [a for a in assignments if a and not a.get("is_submitted")]
+            seen_keys = set()
+            unique_pending = []
+            for a in assignments:
+                if not a or a.get("is_submitted"):
+                    continue
+
+                url = a.get("url", "")
+                m = re.search(r'[?&]id=(\d+)', url)
+                assign_id = m.group(1) if m else url
+
+                title = a.get("title", "").strip()
+                if title.endswith("Assignment") and len(title) > len("Assignment") and not title.lower().startswith("assignment"):
+                    title = title[:-len("Assignment")].strip()
+                elif title.endswith("Tugas") and len(title) > len("Tugas") and not title.lower().startswith("tugas"):
+                    title = title[:-len("Tugas")].strip()
+
+                cname = a.get("course_name", "").strip()
+                key = assign_id if assign_id else (cname, title)
+
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+
+                item = dict(a)
+                item["title"] = title
+                unique_pending.append(item)
+
+            return unique_pending
         except Exception as e:
             logger.warning(f"Gagal baca assignments.json: {e}")
             return []

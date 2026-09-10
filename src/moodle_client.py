@@ -202,9 +202,17 @@ class MoodleClient:
 
             # Find resource, folder, assign, and url links
             activity_links = soup.find_all("a", href=re.compile(r"/mod/(resource|folder|assign|url)/view\.php\?id=\d+"))
+            seen_activity_urls = set()
 
             for link in activity_links:
                 href = link.get("href")
+                if not href or href in seen_activity_urls:
+                    continue
+                seen_activity_urls.add(href)
+
+                # Strip accesshide spans so filename doesn't contain screen-reader suffixes
+                for hidden in link.find_all(class_=re.compile(r"accesshide")):
+                    hidden.decompose()
                 activity_text = self.sanitize_filename(link.get_text(strip=True))
 
                 if "/mod/resource/view.php" in href:
@@ -372,6 +380,7 @@ class MoodleClient:
                 return []
 
         all_assignments = []
+        seen_assign_ids = set()
 
         for course in courses:
             cid = course["id"]
@@ -384,12 +393,45 @@ class MoodleClient:
                 assign_links = soup.find_all("a", href=re.compile(r"/mod/assign/view\.php\?id=\d+"))
 
                 for link in assign_links:
-                    assign_title = link.get_text(strip=True)
                     assign_url = link.get("href")
+                    if not assign_url:
+                        continue
+
+                    # Extract assignment module ID (e.g. /mod/assign/view.php?id=12345)
+                    id_match = re.search(r'[?&]id=(\d+)', assign_url)
+                    assign_id = id_match.group(1) if id_match else assign_url
+
+                    # Deduplicate assignments: avoid scraping the same assignment multiple times
+                    # (e.g. Moodle course index drawer + main content links)
+                    if assign_id in seen_assign_ids:
+                        continue
+                    seen_assign_ids.add(assign_id)
+
+                    canonical_url = f"{self.base_url}/mod/assign/view.php?id={assign_id}" if id_match else assign_url
+
+                    # Strip accesshide spans (e.g. screen-reader "Assignment" text)
+                    for hidden in link.find_all(class_=re.compile(r"accesshide")):
+                        hidden.decompose()
+                    assign_title = link.get_text(strip=True)
 
                     try:
-                        ares = self.session.get(assign_url, timeout=20)
+                        ares = self.session.get(canonical_url, timeout=20)
                         asoup = BeautifulSoup(ares.text, "html.parser")
+
+                        # Try to get clean canonical title from assignment page header
+                        h2 = asoup.select_one("div[role='main'] h2") or asoup.find("h2")
+                        if h2:
+                            for hidden in h2.find_all(class_=re.compile(r"accesshide")):
+                                hidden.decompose()
+                            clean_h2 = h2.get_text(strip=True)
+                            if clean_h2:
+                                assign_title = clean_h2
+
+                        # Safety cleanup: remove trailing screen-reader suffix if still present
+                        if assign_title.endswith("Assignment") and len(assign_title) > len("Assignment") and not assign_title.lower().startswith("assignment"):
+                            assign_title = assign_title[:-len("Assignment")].strip()
+                        elif assign_title.endswith("Tugas") and len(assign_title) > len("Tugas") and not assign_title.lower().startswith("tugas"):
+                            assign_title = assign_title[:-len("Tugas")].strip()
 
                         submission_status = "Unknown"
                         due_date = "Not specified"
@@ -400,33 +442,32 @@ class MoodleClient:
                             rows = table.find_all("tr")
                             for row in rows:
                                 text = row.get_text()
-                                if "Submission status" in text or "Status pengajuan" in text:
-                                    tds = row.find_all("td")
+                                text_lower = text.lower()
+                                tds = row.find_all(["td", "th"])
+                                if any(k in text_lower for k in ["submission status", "status pengajuan", "status tugas"]):
                                     if tds:
                                         submission_status = tds[-1].get_text(strip=True)
-                                elif "Due date" in text or "Batas waktu" in text:
-                                    tds = row.find_all("td")
+                                elif any(k in text_lower for k in ["due date", "batas waktu", "jatuh tempo", "tenggat"]):
                                     if tds:
                                         due_date = tds[-1].get_text(strip=True)
-                                elif "Time remaining" in text or "Sisa waktu" in text:
-                                    tds = row.find_all("td")
+                                elif any(k in text_lower for k in ["time remaining", "sisa waktu"]):
                                     if tds:
                                         time_remaining = tds[-1].get_text(strip=True)
 
-                        is_submitted = any(kw in submission_status.lower() for kw in ["submitted", "diajukan", "graded", "dinilai"])
+                        is_submitted = any(kw in submission_status.lower() for kw in ["submitted", "diajukan", "graded", "dinilai", "dikirim"])
 
                         all_assignments.append({
                             "course_id": cid,
                             "course_name": course_name,
                             "title": assign_title,
-                            "url": assign_url,
+                            "url": canonical_url,
                             "status": submission_status,
                             "is_submitted": is_submitted,
                             "due_date": due_date,
                             "time_remaining": time_remaining
                         })
                     except Exception as e:
-                        logger.warning(f"Error fetching assignment {assign_url}: {e}")
+                        logger.warning(f"Error fetching assignment {canonical_url}: {e}")
 
             except Exception as e:
                 logger.warning(f"Error reading assignments for course {course_name}: {e}")
