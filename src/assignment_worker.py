@@ -20,6 +20,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt
 
+from src.academic_styler import render_umn_academic_document
 from src.ai_service import AIService
 from src.anti_slop import ANTI_SLOP_SYSTEM_INSTRUCTIONS, sanitize_sections_slop, clean_text_slop
 from src.config import (
@@ -205,6 +206,33 @@ class AssignmentWorker:
     def _build_prompt(self, assignment: Dict[str, Any], description: str,
                       attachment_text: str, context: str) -> str:
         name, nim = self._student_name(), self._student_nim()
+
+        # Deteksi panduan format dokumen akademik berdasarkan topik
+        title_cname = f"{assignment.get('title', '')} {assignment.get('course_name', '')}".lower()
+        if "cobit" in title_cname or "audit" in title_cname or "governance" in title_cname:
+            template_guide = """=== PANDUAN STRUKTUR DOKUMEN AUDIT TATA KELOLA TI (COBIT 2019) ===
+Strukturkan sections ke dalam format standar audit resmi UMN:
+1. BAB I PENDAHULUAN (Latar Belakang Organisasi/Studi Kasus, Ruang Lingkup, dan Tujuan Evaluasi)
+2. BAB II FRAMEWORK & DOMAIN FOKUS (Penentuan Domain COBIT 2019 yang Relevan, misal APO, BAI, DSS, MEA)
+3. BAB III PENILAIAN TINGKAT KAPABILITAS (Skala Capability Level 0-5, Bukti Objektif/Evidence, Analisis Kesenjangan/Gap)
+4. BAB IV REKOMENDASI PERBAIKAN (Action Plan Konkret, Tata Kelola Target, dan Prioritas Penerapan)
+5. BAB V KESIMPULAN"""
+        elif "praktikum" in title_cname or "lab" in title_cname or "cyber" in title_cname or "programming" in title_cname:
+            template_guide = """=== PANDUAN STRUKTUR LAPORAN PRAKTIKUM / LAB TEKNIS ===
+Strukturkan sections ke dalam format laporan praktikum resmi UMN:
+1. BAB I TUJUAN PRAKTIKUM
+2. BAB II DASAR TEORI & LINGKUNGAN PENGUJIAN
+3. BAB III LANGKAH IMPLEMENTASI (Sertakan kode program / konfigurasi lengkap di field 'code')
+4. BAB IV HASIL PENGUJIAN & ANALISIS MENDALAM (Jelaskan output kerja dan analisis teknisnya)
+5. BAB V KESIMPULAN"""
+        else:
+            template_guide = """=== PANDUAN STRUKTUR DOKUMEN AKADEMIK RESMI ===
+Strukturkan sections ke dalam format laporan terstruktur:
+1. BAB I PENDAHULUAN (Latar Belakang Masalah & Instruksi Soal)
+2. BAB II KAJIAN TEORI / LANDASAN KONSEP
+3. BAB III PEMBAHASAN & ANALISIS MENDALAM (Kupas tuntas seluruh poin pertanyaan/soal secara analitis)
+4. BAB IV KESIMPULAN & PENUTUP"""
+
         return f"""Kamu adalah mahasiswa UMN bernama {name} (NIM {nim}) yang cerdas, berpikiran kritis, dan menguasai materi teknis.
 Kerjakan tugas kuliah berikut SEBAIK MUNGKIN, DENGAN KEDALAMAN AKADEMIS TINGGI, dan SESUAI FORMAT YANG DIMINTA SOAL.
 
@@ -224,6 +252,8 @@ Deadline    : {assignment.get('due_date', '-')}
 
 {ANTI_SLOP_SYSTEM_INSTRUCTIONS}
 
+{template_guide}
+
 === ATURAN PENGERJAAN TEKNIS ===
 1. Ikuti SEMUA instruksi & format dari soal: struktur bab/bagian, jumlah kata/kalimat, bahasa
    (kalau soal tidak menyebutkan bahasa, pakai Bahasa Indonesia akademik yang padat, lugas, dan bebas klise).
@@ -238,7 +268,7 @@ Deadline    : {assignment.get('due_date', '-')}
       "filename": "Tugas - <judul singkat>.docx",
       "sections": [
         {{
-          "heading": "Judul Bagian 1",
+          "heading": "BAB I PENDAHULUAN",
           "paragraphs": ["paragraf isi analitis dan padat..."],
           "bullets": ["poin 1 konkret", "poin 2 konkret"],
           "code": "kode program bila ada, string biasa dengan \\n untuk baris baru, atau string kosong"
@@ -248,7 +278,7 @@ Deadline    : {assignment.get('due_date', '-')}
   ]
 }}
 Ketentuan: cukup 1 file DOCX. Setiap "sections" punya minimal satu dari paragraphs/bullets/code.
-Jangan pakai markdown (**, ##) di dalam teks — sudah diformat otomatis jadi dokumen Word."""
+Jangan pakai markdown (**, ##) di dalam teks — sudah diformat otomatis jadi dokumen resmi Word berstandar UMN."""
 
     @staticmethod
     def _parse_llm_json(text: str) -> Optional[Dict[str, Any]]:
@@ -273,48 +303,14 @@ Jangan pakai markdown (**, ##) di dalam teks — sudah diformat otomatis jadi do
 
     # ------------------------------------------------------------ render docx
     def _render_docx(self, spec: Dict[str, Any], assignment: Dict[str, Any], out_path: Path) -> Path:
-        doc = Document()
-
-        # Sampul / header identitas
-        title_para = doc.add_paragraph()
-        title_run = title_para.add_run(spec.get("filename", assignment.get("title", "Tugas")).replace(".docx", ""))
-        title_run.bold = True
-        title_run.font.size = Pt(16)
-        title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-        meta_para = doc.add_paragraph()
-        meta = (f"{assignment.get('course_name', '')}\n"
-                f"Nama : {self._student_name()}\n"
-                f"NIM  : {self._student_nim()}\n"
-                f"Tanggal : {datetime.now():%d %B %Y}")
-        meta_run = meta_para.add_run(meta)
-        meta_run.font.size = Pt(10)
-        meta_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        doc.add_paragraph()
-
-        for section in spec.get("sections", []):
-            heading = (section.get("heading") or "").strip()
-            if heading:
-                doc.add_heading(heading, level=1)
-            for para in section.get("paragraphs", []) or []:
-                p = doc.add_paragraph(str(para))
-                p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            for bullet in section.get("bullets", []) or []:
-                doc.add_paragraph(str(bullet), style="List Bullet")
-            code = (section.get("code") or "").strip()
-            if code:
-                code_heading = doc.add_paragraph()
-                r = code_heading.add_run("Kode Program:")
-                r.bold = True
-                for line in code.split("\n"):
-                    cp = doc.add_paragraph()
-                    run = cp.add_run(line)
-                    run.font.name = "Courier New"
-                    run.font.size = Pt(9)
-                    cp.paragraph_format.space_after = Pt(0)
-
-        doc.save(str(out_path))
-        return out_path
+        """Render dokumen berstandar akademik UMN (margin 4-4-3-3, cover formal, TNR 12pt 1.5 spasi)."""
+        return render_umn_academic_document(
+            spec=spec,
+            assignment=assignment,
+            student_name=self._student_name(),
+            student_nim=self._student_nim(),
+            out_path=out_path
+        )
 
     # ------------------------------------------------------------- main entry
     def work_on_assignment(self, assignment: Dict[str, Any]) -> Dict[str, Any]:

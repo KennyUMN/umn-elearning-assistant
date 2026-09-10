@@ -226,6 +226,11 @@ class MoodleClient:
                     folder_files = self._download_folder(href, activity_text, course_dir)
                     downloaded_files.extend(folder_files)
 
+                elif "/mod/url/view.php" in href:
+                    url_file = self._download_external_url(href, activity_text, course_dir)
+                    if url_file:
+                        downloaded_files.append(url_file)
+
         except Exception as e:
             logger.error(f"Error scraping course {course_name}: {e}")
 
@@ -307,6 +312,99 @@ class MoodleClient:
             logger.warning(f"Failed downloading folder activity {folder_url}: {e}")
 
         return files
+
+    def _download_external_url(self, moodle_url: str, title: str, dest_dir: Path) -> Optional[Dict[str, Any]]:
+        """Download documents from external URLs (SharePoint, OneDrive, Google Docs/Drive, direct PDF/PPTX)."""
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            # 1. Ikuti redirect dari Moodle /mod/url/view.php
+            res = self.session.get(moodle_url, timeout=25, allow_redirects=True)
+            final_url = res.url
+
+            # Jika masih di domain Moodle, ambil tautan workaround
+            if "elearning.umn.ac.id" in final_url:
+                soup = BeautifulSoup(res.text, "html.parser")
+                workaround = soup.select_one(".urlworkaround a, div[role='main'] a")
+                if workaround and workaround.get("href"):
+                    final_url = workaround.get("href")
+
+            target_download_url = final_url
+            filename = f"{title}.bin"
+
+            # 2. Tangani Google Docs / Sheets / Slides / Drive
+            gdoc_m = re.search(r"docs\.google\.com/document/d/([a-zA-Z0-9_-]+)", final_url)
+            gsheet_m = re.search(r"docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)", final_url)
+            gslide_m = re.search(r"docs\.google\.com/presentation/d/([a-zA-Z0-9_-]+)", final_url)
+            gdrive_file_m = re.search(r"drive\.google\.com/file/d/([a-zA-Z0-9_-]+)", final_url)
+
+            if gdoc_m:
+                doc_id = gdoc_m.group(1)
+                target_download_url = f"https://docs.google.com/document/d/{doc_id}/export?format=pdf"
+                filename = f"{title}.pdf"
+            elif gsheet_m:
+                sheet_id = gsheet_m.group(1)
+                target_download_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=pdf"
+                filename = f"{title}.pdf"
+            elif gslide_m:
+                slide_id = gslide_m.group(1)
+                target_download_url = f"https://docs.google.com/presentation/d/{slide_id}/export?format=pdf"
+                filename = f"{title}.pdf"
+            elif gdrive_file_m:
+                file_id = gdrive_file_m.group(1)
+                target_download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+
+            # 3. Tangani SharePoint UMN (*.sharepoint.com) & OneDrive (1drv.ms / onedrive.live.com)
+            elif "sharepoint.com" in final_url or "1drv.ms" in final_url or "onedrive.live.com" in final_url:
+                parsed = urllib.parse.urlparse(final_url)
+                qs = urllib.parse.parse_qs(parsed.query)
+                qs["download"] = ["1"]
+                target_download_url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(qs, doseq=True)))
+
+            # Cek apakah file sudah ada sebelumnya
+            safe_default_name = self.sanitize_filename(filename)
+            existing_path = dest_dir / safe_default_name
+            if existing_path.exists() and existing_path.stat().st_size > 0:
+                return {"title": title, "path": str(existing_path), "is_new": False}
+
+            # Unduh file
+            dres = requests.get(target_download_url, stream=True, timeout=30, allow_redirects=True)
+            if dres.status_code == 200:
+                cd = dres.headers.get("content-disposition", "")
+                if "filename=" in cd:
+                    m = re.search(r'filename="?([^";]+)"?', cd)
+                    if m:
+                        filename = urllib.parse.unquote(m.group(1))
+                elif not filename.endswith(".pdf"):
+                    ctype = dres.headers.get("content-type", "")
+                    if "pdf" in ctype:
+                        filename = f"{title}.pdf"
+                    elif "presentation" in ctype or "powerpoint" in ctype:
+                        filename = f"{title}.pptx"
+                    elif "wordprocessingml" in ctype or "msword" in ctype:
+                        filename = f"{title}.docx"
+                    elif "text/html" in ctype:
+                        filename = f"{title}.url"
+
+                filename = self.sanitize_filename(filename)
+                target_path = dest_dir / filename
+
+                if target_path.exists() and target_path.stat().st_size > 0:
+                    return {"title": title, "path": str(target_path), "is_new": False}
+
+                if filename.endswith(".url"):
+                    target_path.write_text(f"[InternetShortcut]\nURL={final_url}\n", encoding="utf-8")
+                    logger.info(f"Saved external link shortcut: {filename}")
+                else:
+                    with open(target_path, "wb") as f:
+                        for chunk in dres.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    logger.info(f"Downloaded external document: {filename} ({target_path.stat().st_size} bytes)")
+
+                return {"title": title, "path": str(target_path), "is_new": True}
+        except Exception as e:
+            logger.warning(f"Could not download external URL activity {moodle_url}: {e}")
+
+        return None
 
     def get_assignment_details(self, assign_url: str, course_name: str = "", title: str = "") -> Dict[str, Any]:
         """Ambil detail tugas dari halaman mod/assign: deskripsi/instruksi, jenis submission,
@@ -578,3 +676,158 @@ class MoodleClient:
             json.dump(all_assignments, f, indent=2, ensure_ascii=False)
 
         return all_assignments
+
+    def submit_assignment(self, assign_url: str, file_path: Path, comment: str = "") -> Dict[str, Any]:
+        """Kumpulkan file tugas ke Moodle e-learning UMN secara otomatis.
+
+        Alur:
+        1. Buka halaman editsubmission (mod/assign/view.php?id=...&action=editsubmission).
+        2. Ambil token sesskey, draftitemid (files_filemanager), repo_id upload, context_id.
+        3. Upload file ke repositori draft Moodle via repository/repository_ajax.php?action=upload.
+        4. Submit form savesubmission (mod/assign/view.php) dengan hidden inputs lengkap.
+        5. Jika ada konfirmasi akhir ('action=submit'), selesaikan konfirmasi.
+        6. Verifikasi halaman akhir apakah status berubah menjadi 'Submitted for grading' / 'Draft'.
+        """
+        if not self.is_logged_in:
+            self.login()
+
+        file_path = Path(file_path)
+        if not file_path.exists() or file_path.stat().st_size == 0:
+            return {"ok": False, "error": f"File {file_path.name} tidak ditemukan atau kosong."}
+
+        try:
+            sep = "&" if "?" in assign_url else "?"
+            edit_url = f"{assign_url}{sep}action=editsubmission"
+            logger.info(f"Membuka halaman editsubmission: {edit_url}")
+            res = self.session.get(edit_url, timeout=30)
+            if res.status_code != 200:
+                return {"ok": False, "error": f"Gagal membuka editsubmission (HTTP {res.status_code})"}
+
+            soup = BeautifulSoup(res.text, "html.parser")
+
+            form = soup.find("form", {"id": lambda x: x and "mform" in x}) or soup.find("form")
+            if not form:
+                return {"ok": False, "error": "Form submission tidak ditemukan. Kemungkinan submission sudah ditutup atau tidak aktif."}
+
+            form_action = form.get("action") or f"{self.base_url}/mod/assign/view.php"
+            if form_action.startswith("/"):
+                form_action = f"{self.base_url}{form_action}"
+
+            form_data = {}
+            for inp in form.find_all("input"):
+                name = inp.get("name")
+                val = inp.get("value", "")
+                if name:
+                    form_data[name] = val
+
+            sesskey = form_data.get("sesskey")
+            if not sesskey:
+                sesskey_match = re.search(r'"sesskey":"([^"]+)"', res.text)
+                sesskey = sesskey_match.group(1) if sesskey_match else ""
+
+            if not sesskey:
+                return {"ok": False, "error": "Sesskey tidak ditemukan di halaman submission."}
+
+            itemid = form_data.get("files_filemanager")
+            if not itemid:
+                fm_input = soup.find("input", {"name": "files_filemanager"})
+                itemid = fm_input.get("value") if fm_input else None
+
+            if not itemid:
+                m = re.search(r'"itemid":\s*(\d+)', res.text)
+                itemid = m.group(1) if m else None
+
+            if not itemid:
+                return {"ok": False, "error": "Draft itemid (files_filemanager) tidak ditemukan. Jenis tugas ini mungkin bukan upload file (misal: kuis atau online text murni)."}
+
+            repo_match = re.search(r'"(\d+)":\s*\{"id":"\d+","name":"[^"]*","type":"upload"', res.text)
+            repo_id = repo_match.group(1) if repo_match else "5"
+
+            ctx_match = re.search(r'"context":\s*\{"id":\s*(\d+)', res.text)
+            ctx_id = ctx_match.group(1) if ctx_match else ""
+
+            upload_url = f"{self.base_url}/repository/repository_ajax.php?action=upload"
+            logger.info(f"Mengunggah file {file_path.name} ke Moodle draft repository (repo_id={repo_id}, itemid={itemid})...")
+
+            suffix = file_path.suffix.lower()
+            if suffix == ".docx":
+                mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            elif suffix == ".pdf":
+                mime_type = "application/pdf"
+            elif suffix == ".zip":
+                mime_type = "application/zip"
+            else:
+                mime_type = "application/octet-stream"
+
+            with open(file_path, "rb") as f:
+                up_files = {
+                    "repo_upload_file": (file_path.name, f, mime_type)
+                }
+                up_data = {
+                    "title": file_path.name,
+                    "author": form_data.get("author", "Mahasiswa UMN"),
+                    "license": "allrightsreserved",
+                    "itemid": itemid,
+                    "repo_id": repo_id,
+                    "p": "",
+                    "page": "",
+                    "env": "filemanager",
+                    "sesskey": sesskey,
+                    "ctx_id": ctx_id
+                }
+                up_res = self.session.post(upload_url, data=up_data, files=up_files, timeout=45)
+
+            if up_res.status_code != 200:
+                return {"ok": False, "error": f"Upload gagal (HTTP {up_res.status_code}): {up_res.text[:200]}"}
+
+            try:
+                up_json = up_res.json()
+                if "error" in up_json:
+                    return {"ok": False, "error": f"Moodle menolak file: {up_json.get('error')}"}
+            except Exception:
+                pass
+
+            form_data["action"] = "savesubmission"
+            form_data["submitbutton"] = "Save changes"
+            if "cancel" in form_data:
+                del form_data["cancel"]
+
+            logger.info(f"Menyimpan submission ke {form_action}...")
+            save_res = self.session.post(form_action, data=form_data, timeout=30, allow_redirects=True)
+
+            final_soup = BeautifulSoup(save_res.text, "html.parser")
+            submit_form = final_soup.find("form", action=lambda x: x and "mod/assign/view.php" in x)
+            if submit_form:
+                action_inp = submit_form.find("input", {"name": "action", "value": "submit"})
+                if action_inp:
+                    logger.info("Ditemukan konfirmasi final 'Submit assignment' — melakukan konfirmasi...")
+                    conf_data = {}
+                    for inp in submit_form.find_all("input"):
+                        if inp.get("name"):
+                            conf_data[inp.get("name")] = inp.get("value", "")
+                    conf_action = submit_form.get("action")
+                    if conf_action.startswith("/"):
+                        conf_action = f"{self.base_url}{conf_action}"
+                    conf_res = self.session.post(conf_action, data=conf_data, timeout=30, allow_redirects=True)
+                    final_soup = BeautifulSoup(conf_res.text, "html.parser")
+
+            status_text = "Tersimpan"
+            table = final_soup.find("table", class_=lambda x: x and "generaltable" in x) or final_soup.find("div", class_="submissionstatustable")
+            if table:
+                for row in table.find_all("tr"):
+                    txt = row.get_text(strip=True)
+                    if "Submission status" in txt or "Status pengajuan" in txt:
+                        status_text = txt
+                        break
+
+            is_success = any(k.lower() in status_text.lower() for k in ["submitted", "draft", "diajukan", "tersimpan"]) or file_path.name in final_soup.get_text()
+
+            return {
+                "ok": is_success,
+                "status": status_text,
+                "filename": file_path.name,
+                "url": assign_url
+            }
+        except Exception as e:
+            logger.error(f"Error submitting assignment: {e}", exc_info=True)
+            return {"ok": False, "error": str(e)}
