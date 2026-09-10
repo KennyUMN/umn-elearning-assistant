@@ -1,4 +1,5 @@
 import logging
+import threading
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -8,6 +9,7 @@ from src.config import (
     TELEGRAM_CHAT_ID,
     MORNING_BRIEFING_TIME,
     EVENING_REMINDER_TIME,
+    AUTO_SYNC_HOURS,
     AUTO_DO_ASSIGNMENTS,
     AUTO_DO_ASSIGNMENTS_TIME,
     AUTO_DO_MAX_PER_RUN
@@ -67,10 +69,19 @@ def send_telegram_document(file_path, caption: str = ""):
         return False
 
 
+_sync_lock = threading.Lock()
+
 def job_sync_elearning():
     """Job: Sync materials and assignments from E-Learning."""
-    logger.info("[CRON] Starting automated E-Learning sync...")
+    if not _sync_lock.acquire(blocking=False):
+        logger.info("[CRON] Sync sedang berjalan di proses lain. Menunggu selesai...")
+        acquired = _sync_lock.acquire(timeout=120)
+        if not acquired:
+            logger.warning("[CRON] Timeout menunggu sync sebelumnya. Melewati sync ini.")
+            return
+
     try:
+        logger.info("[CRON] Starting automated E-Learning sync...")
         client = MoodleClient()
         if client.login():
             courses = client.get_enrolled_courses()
@@ -80,13 +91,17 @@ def job_sync_elearning():
             parser.process_all()
             client.get_assignments(courses)
             logger.info("[CRON] E-Learning sync completed.")
+        else:
+            logger.warning("[CRON] Gagal login ke E-Learning UMN saat auto-sync.")
     except Exception as e:
         logger.error(f"[CRON] Error during auto-sync: {e}")
+    finally:
+        _sync_lock.release()
 
 def job_morning_briefing():
     """Job: Generate and broadcast morning class prep briefing."""
     logger.info("[CRON] Triggering Morning Briefing...")
-    # First ensure we have fresh data
+    # Pastikan data materi & tugas selalu fresh sebelum membuat briefing
     job_sync_elearning()
 
     ai_service = AIService()
@@ -96,6 +111,9 @@ def job_morning_briefing():
 def job_evening_assignment_reminder():
     """Job: Generate and broadcast assignment deadlines reminder."""
     logger.info("[CRON] Triggering Evening Assignment Reminder...")
+    # Pastikan data tugas & deadline selalu fresh sebelum mengirim reminder
+    job_sync_elearning()
+
     ai_service = AIService()
     reminder = ai_service.generate_assignment_reminder()
     send_telegram_alert(reminder)
@@ -105,6 +123,9 @@ def job_auto_do_assignments():
     if not AUTO_DO_ASSIGNMENTS:
         return
     logger.info("[CRON] Auto-do assignments: memeriksa tugas baru...")
+    # Pastikan data tugas di-sync terlebih dahulu agar tugas baru terdeteksi
+    job_sync_elearning()
+
     try:
         worker = AssignmentWorker()
         pending = worker.list_pending()
@@ -158,13 +179,23 @@ def start_scheduler():
     except Exception as e:
         logger.error(f"Invalid EVENING_REMINDER_TIME format: {e}")
 
-    # Auto-sync twice daily (e.g. 06:00 and 17:30)
-    scheduler.add_job(
-        job_sync_elearning,
-        CronTrigger(hour="6,17", minute="30"),
-        id="elearning_sync",
-        name="Auto Sync E-Learning Materials"
-    )
+    # Auto-sync schedule from AUTO_SYNC_HOURS (mis. "06:00,18:00")
+    sync_hours = AUTO_SYNC_HOURS or "06:00,18:00"
+    for idx, sync_time in enumerate(sync_hours.split(",")):
+        sync_time = sync_time.strip()
+        if not sync_time:
+            continue
+        try:
+            s_hour, s_min = sync_time.split(":")
+            scheduler.add_job(
+                job_sync_elearning,
+                CronTrigger(hour=int(s_hour), minute=int(s_min)),
+                id=f"elearning_sync_{idx}",
+                name=f"Auto Sync E-Learning Materials ({sync_time})"
+            )
+            logger.info(f"Scheduled Auto-Sync at {sync_time} WIB")
+        except Exception as e:
+            logger.error(f"Invalid sync time '{sync_time}': {e}")
 
     # Auto-do assignments (AI kerjakan tugas baru, kirim .docx ke Telegram)
     try:
