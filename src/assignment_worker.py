@@ -104,7 +104,11 @@ class AssignmentWorker:
                 item["title"] = title
                 unique_pending.append(item)
 
-            return unique_pending
+            # AI auto-worker hanya mengerjakan tugas dokumen, kuis interaktif diselesaikan sendiri
+            return [
+                p for p in unique_pending
+                if p.get("type") != "quiz" and p.get("modulename") != "quiz" and "/mod/quiz/" not in p.get("url", "")
+            ]
         except Exception as e:
             logger.warning(f"Gagal baca assignments.json: {e}")
             return []

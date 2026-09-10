@@ -1,7 +1,9 @@
 import re
 import json
+import time
 import logging
 import urllib.parse
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import requests
@@ -373,8 +375,92 @@ class MoodleClient:
 
         return details
 
+    def get_timeline_events(self) -> List[Dict[str, Any]]:
+        """Fetch all upcoming action events (quizzes, assignments, etc.) directly from Moodle Timeline API."""
+        if not self.is_logged_in:
+            if not self.login():
+                return []
+
+        events = []
+        try:
+            res = self.session.get(f"{self.base_url}/my/", timeout=20)
+            sesskey_match = re.search(r"\"sesskey\":\"([^\"]+)\"", res.text)
+            sesskey = sesskey_match.group(1) if sesskey_match else ""
+
+            if not sesskey:
+                logger.warning("Gagal mendapatkan sesskey untuk timeline.")
+                return []
+
+            now_ts = int(time.time())
+            wib = timezone(timedelta(hours=7))
+
+            ajax_url = f"{self.base_url}/lib/ajax/service.php?sesskey={sesskey}&info=core_calendar_get_action_events_by_timesort"
+            payload = [{
+                "index": 0,
+                "methodname": "core_calendar_get_action_events_by_timesort",
+                "args": {
+                    "timesortfrom": now_ts,
+                    "limitnum": 50
+                }
+            }]
+
+            ares = self.session.post(ajax_url, json=payload, timeout=20)
+            if ares.status_code == 200:
+                data = ares.json()
+                raw_events = data[0].get("data", {}).get("events", []) if data else []
+                for ev in raw_events:
+                    modname = ev.get("modulename", "assign")
+                    title = ev.get("activityname") or ev.get("name", "")
+                    course_info = ev.get("course", {})
+                    course_name = course_info.get("fullname") or ""
+                    course_id = str(course_info.get("id") or "")
+
+                    raw_url = ev.get("url") or ev.get("action", {}).get("url", "")
+                    id_match = re.search(r"[?&]id=(\d+)", raw_url)
+                    cmid = id_match.group(1) if id_match else ""
+                    canonical_url = f"{self.base_url}/mod/{modname}/view.php?id={cmid}" if cmid else raw_url
+
+                    ts = ev.get("timesort", 0)
+                    dt = datetime.fromtimestamp(ts, tz=wib)
+                    due_date_str = dt.strftime("%A, %d %B %Y, %H:%M WIB")
+
+                    diff_secs = ts - now_ts
+                    if diff_secs > 0:
+                        days = diff_secs // 86400
+                        hours = (diff_secs % 86400) // 3600
+                        mins = (diff_secs % 3600) // 60
+                        if days > 0:
+                            remaining_str = f"{days} hari {hours} jam lagi"
+                        elif hours > 0:
+                            remaining_str = f"{hours} jam {mins} menit lagi"
+                        else:
+                            remaining_str = f"{mins} menit lagi"
+                    else:
+                        remaining_str = "Sudah lewat deadline"
+
+                    events.append({
+                        "id": cmid,
+                        "course_id": course_id,
+                        "course_name": course_name,
+                        "title": title,
+                        "url": canonical_url,
+                        "status": "Pending",
+                        "is_submitted": False,
+                        "due_date": due_date_str,
+                        "time_remaining": remaining_str,
+                        "type": "quiz" if modname == "quiz" else "assignment",
+                        "modulename": modname,
+                        "timesort": ts
+                    })
+
+                logger.info(f"Timeline Moodle: {len(events)} tugas/kuis aktif ditemukan.")
+        except Exception as e:
+            logger.warning(f"Error fetching Moodle timeline events: {e}")
+
+        return events
+
     def get_assignments(self, courses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Scrape assignments across all courses and check deadlines & submission status."""
+        """Scrape assignments & quizzes across Moodle Timeline and courses, checking deadlines & status."""
         if not self.is_logged_in:
             if not self.login():
                 return []
@@ -382,6 +468,16 @@ class MoodleClient:
         all_assignments = []
         seen_assign_ids = set()
 
+        # Step 1: Ambil langsung dari Moodle Timeline API (Single Source of Truth untuk tugas & kuis aktif)
+        timeline_events = self.get_timeline_events()
+        for ev in timeline_events:
+            ev_id = ev.get("id") or ev.get("url")
+            if ev_id and ev_id not in seen_assign_ids:
+                seen_assign_ids.add(ev_id)
+                all_assignments.append(ev)
+
+        # Step 2: Scan halaman course untuk mendeteksi tugas/kuis yang mungkin tidak ada di timeline
+        # (misal tugas tanpa batas waktu atau jika Timeline API kosong)
         for course in courses:
             cid = course["id"]
             course_name = course["title"]
@@ -390,9 +486,9 @@ class MoodleClient:
             try:
                 res = self.session.get(course_url, timeout=20)
                 soup = BeautifulSoup(res.text, "html.parser")
-                assign_links = soup.find_all("a", href=re.compile(r"/mod/assign/view\.php\?id=\d+"))
+                activity_links = soup.find_all("a", href=re.compile(r"/mod/(assign|quiz)/view\.php\?id=\d+"))
 
-                for link in assign_links:
+                for link in activity_links:
                     assign_url = link.get("href")
                     if not assign_url:
                         continue
@@ -401,13 +497,14 @@ class MoodleClient:
                     id_match = re.search(r'[?&]id=(\d+)', assign_url)
                     assign_id = id_match.group(1) if id_match else assign_url
 
-                    # Deduplicate assignments: avoid scraping the same assignment multiple times
-                    # (e.g. Moodle course index drawer + main content links)
+                    # Deduplicate: skip jika sudah diambil dari timeline atau link sebelumnya
                     if assign_id in seen_assign_ids:
                         continue
                     seen_assign_ids.add(assign_id)
 
-                    canonical_url = f"{self.base_url}/mod/assign/view.php?id={assign_id}" if id_match else assign_url
+                    is_quiz = "/mod/quiz/" in assign_url
+                    modtype = "quiz" if is_quiz else "assign"
+                    canonical_url = f"{self.base_url}/mod/{modtype}/view.php?id={assign_id}" if id_match else assign_url
 
                     # Strip accesshide spans (e.g. screen-reader "Assignment" text)
                     for hidden in link.find_all(class_=re.compile(r"accesshide")):
@@ -428,10 +525,9 @@ class MoodleClient:
                                 assign_title = clean_h2
 
                         # Safety cleanup: remove trailing screen-reader suffix if still present
-                        if assign_title.endswith("Assignment") and len(assign_title) > len("Assignment") and not assign_title.lower().startswith("assignment"):
-                            assign_title = assign_title[:-len("Assignment")].strip()
-                        elif assign_title.endswith("Tugas") and len(assign_title) > len("Tugas") and not assign_title.lower().startswith("tugas"):
-                            assign_title = assign_title[:-len("Tugas")].strip()
+                        for suffix in ["Assignment", "Tugas", "Quiz", "Kuis"]:
+                            if assign_title.endswith(suffix) and len(assign_title) > len(suffix) and not assign_title.lower().startswith(suffix.lower()):
+                                assign_title = assign_title[:-len(suffix)].strip()
 
                         submission_status = "Unknown"
                         due_date = "Not specified"
@@ -457,6 +553,7 @@ class MoodleClient:
                         is_submitted = any(kw in submission_status.lower() for kw in ["submitted", "diajukan", "graded", "dinilai", "dikirim"])
 
                         all_assignments.append({
+                            "id": assign_id,
                             "course_id": cid,
                             "course_name": course_name,
                             "title": assign_title,
@@ -464,13 +561,18 @@ class MoodleClient:
                             "status": submission_status,
                             "is_submitted": is_submitted,
                             "due_date": due_date,
-                            "time_remaining": time_remaining
+                            "time_remaining": time_remaining,
+                            "type": "quiz" if is_quiz else "assignment",
+                            "modulename": modtype
                         })
                     except Exception as e:
                         logger.warning(f"Error fetching assignment {canonical_url}: {e}")
 
             except Exception as e:
                 logger.warning(f"Error reading assignments for course {course_name}: {e}")
+
+        # Urutkan berdasarkan waktu deadline terdekat
+        all_assignments.sort(key=lambda x: x.get("timesort", 9999999999))
 
         with open(ASSIGNMENTS_FILE, "w", encoding="utf-8") as f:
             json.dump(all_assignments, f, indent=2, ensure_ascii=False)

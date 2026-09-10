@@ -590,7 +590,7 @@ Gunakan gaya bahasa santai mahasiswa-friendly dan formatting Markdown Telegram y
         return self._generate_with_fallback(prompt)
 
     def _load_pending_assignments(self) -> List[Dict[str, Any]]:
-        """Load and defensively deduplicate pending assignments from ASSIGNMENTS_FILE."""
+        """Load and defensively deduplicate pending assignments & quizzes from ASSIGNMENTS_FILE."""
         if not ASSIGNMENTS_FILE.exists():
             return []
 
@@ -608,10 +608,9 @@ Gunakan gaya bahasa santai mahasiswa-friendly dan formatting Markdown Telegram y
                 assign_id = m.group(1) if m else url
 
                 title = a.get("title", "").strip()
-                if title.endswith("Assignment") and len(title) > len("Assignment") and not title.lower().startswith("assignment"):
-                    title = title[:-len("Assignment")].strip()
-                elif title.endswith("Tugas") and len(title) > len("Tugas") and not title.lower().startswith("tugas"):
-                    title = title[:-len("Tugas")].strip()
+                for suffix in ["Assignment", "Tugas", "Quiz", "Kuis"]:
+                    if title.endswith(suffix) and len(title) > len(suffix) and not title.lower().startswith(suffix.lower()):
+                        title = title[:-len(suffix)].strip()
 
                 cname = a.get("course_name", "").strip()
                 key = assign_id if assign_id else (cname, title)
@@ -630,7 +629,7 @@ Gunakan gaya bahasa santai mahasiswa-friendly dan formatting Markdown Telegram y
             return []
 
     def generate_assignment_reminder(self) -> str:
-        """Generate a focused reminder message for pending assignments."""
+        """Generate a focused reminder message for pending assignments and quizzes."""
         if not ASSIGNMENTS_FILE.exists():
             return "ℹ️ Belum ada data tugas. Silakan jalankan `/sync` terlebih dahulu."
 
@@ -638,20 +637,34 @@ Gunakan gaya bahasa santai mahasiswa-friendly dan formatting Markdown Telegram y
             pending = self._load_pending_assignments()
 
             if not pending:
-                return "🎉 **Hore! Semua tugas e-learning sudah beres / tidak ada tugas pending saat ini.** Tetap santai dan pertahankan! 🚀"
+                return "🎉 **Hore! Semua tugas & kuis e-learning sudah beres / tidak ada deadline pending saat ini.** Tetap santai dan pertahankan! 🚀"
+
+            quiz_count = len([p for p in pending if p.get("type") == "quiz" or p.get("modulename") == "quiz" or "/mod/quiz/" in p.get("url", "")])
+            assign_count = len(pending) - quiz_count
+            if quiz_count > 0 and assign_count > 0:
+                header_count = f"Terdapat **{len(pending)}** aktivitas ({assign_count} tugas, {quiz_count} kuis) yang masih perlu dikerjakan:"
+            elif quiz_count > 0:
+                header_count = f"Terdapat **{len(pending)}** kuis yang masih perlu dikerjakan:"
+            else:
+                header_count = f"Terdapat **{len(pending)}** tugas yang masih perlu dikerjakan:"
 
             msg_lines = [
-                "📋 **REMINDER TUGAS E-LEARNING UMN**",
-                f"Terdapat **{len(pending)}** tugas yang masih perlu dikerjakan:\n"
+                "📋 **REMINDER TUGAS & KUIS E-LEARNING UMN**",
+                f"{header_count}\n"
             ]
 
             for i, p in enumerate(pending, 1):
+                is_quiz = p.get("type") == "quiz" or p.get("modulename") == "quiz" or "/mod/quiz/" in p.get("url", "")
+                label = "Kuis" if is_quiz else "Tugas"
+                icon = "📝" if is_quiz else "📌"
+                link_label = f"Buka {label} di E-Learning"
+
                 msg_lines.append(
                     f"{i}. **{p.get('course_name')}**\n"
-                    f"   📌 Tugas: _{p.get('title')}_\n"
+                    f"   {icon} {label}: _{p.get('title')}_\n"
                     f"   ⏰ Deadline: *{p.get('due_date')}*\n"
                     f"   ⏳ Sisa Waktu: {p.get('time_remaining')}\n"
-                    f"   🔗 [Buka Tugas di E-Learning]({p.get('url')})\n"
+                    f"   🔗 [{link_label}]({p.get('url')})\n"
                 )
 
             msg_lines.append("💡 _Segera selesaikan sebelum deadline agar tidak menumpuk ya!_")
