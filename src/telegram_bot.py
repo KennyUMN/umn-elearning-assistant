@@ -3,6 +3,7 @@ import logging
 import asyncio
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
