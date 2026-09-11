@@ -110,24 +110,28 @@ STOPWORDS = {
 COURSE_ALIASES = {
     "IF590": ["rti", "riset", "research", "metopen", "metlit", "metodologi penelitian", "it research", "winarno", "arya", "skripsi", "proposal", "poster"],
     "IF570": ["mobdev", "mobile", "map", "kotlin", "android", "pemrograman aplikasi bergerak", "aplikasi mobile"],
-    "IF542": ["dl", "deep learning", "neural network", "machine learning", "ml vs dl"],
+    "IF542": ["deep learning", "deeplearning", "neural network", "machine learning", "ml vs dl"],
     "IF571": ["cyber", "cybersecurity", "security", "keamanan", "keamanan siber", "cia triad"],
     "EM105": ["techno", "technopreneur", "technopreneurship", "kewirausahaan", "wadhwani", "nen", "pitching", "business"],
     "IF581": ["game dev", "game development", "gamedev", "game"],
-    "UM321": ["english 3", "english3", "bahasa inggris"],
-    "MSC5233": ["ai for strategic communication", "strategic communication", "ai stratcom"]
+    "UM321": ["english 3", "english3", "bahasa inggris", "english"],
+    "MSC5233": [
+        "ai for strategic communication", "strategic communication", "ai stratcom",
+        "ai for stracom", "stracom", "stratcom", "komunikasi strategis", "ai komunikasi",
+        "msc5233"
+    ]
 }
 
 class AIService:
     def __init__(self, api_key: str = GEMINI_API_KEY):
         self.api_key = api_key
         self.client = genai.Client(api_key=self.api_key) if self.api_key else None
-        # Default model is Gemini 3.7 Flash, with automatic fast fallback chain
+        # Default fallback chain (fast, high-availability Google models)
         self.models_to_try = [
-            "models/gemini-3.7-flash",
+            "models/gemini-2.5-flash",
+            "models/gemini-flash-latest",
             "models/gemini-flash-lite-latest",
-            "models/gemini-3.1-flash-lite",
-            "models/gemini-3.6-flash"
+            "models/gemini-3.7-flash"
         ]
 
     def is_configured(self) -> bool:
@@ -135,6 +139,8 @@ class AIService:
 
     def _detect_target_course(self, query: str) -> Optional[str]:
         """Detect if the user query refers to a specific course code or alias."""
+        if not query:
+            return None
         q_lower = query.lower()
         for code, aliases in COURSE_ALIASES.items():
             if code.lower() in q_lower:
@@ -142,6 +148,19 @@ class AIService:
             for alias in aliases:
                 if re.search(rf"\b{re.escape(alias)}\b", q_lower):
                     return code
+
+        # Cari kecocokan langsung dengan nama folder di extracted_text
+        if EXTRACTED_TEXT_DIR.exists():
+            for cdir in EXTRACTED_TEXT_DIR.iterdir():
+                if not cdir.is_dir():
+                    continue
+                # Contoh: (MSC5233-A-EN) AI for Strategic Communication - LEC
+                clean_name = re.sub(r"^\([^\)]+\)\s*", "", cdir.name)
+                clean_name = re.sub(r"\s*-\s*(LEC|LAB)$", "", clean_name, flags=re.IGNORECASE).strip().lower()
+                if clean_name and len(clean_name) > 3:
+                    if clean_name in q_lower:
+                        m = re.match(r"\(([A-Za-z0-9_-]+)\)", cdir.name)
+                        return m.group(1).split("-")[0] if m else cdir.name
         return None
 
     def _generate_with_fallback(self, prompt: str) -> str:
@@ -240,7 +259,7 @@ class AIService:
             f"_Coba `/model gemini` untuk balik ke provider Gemini._"
         )
 
-    def _get_relevant_context(self, query: str = "", max_chars: int = 35000) -> str:
+    def _get_relevant_context(self, query: str = "", max_chars: int = 35000, target_code: Optional[str] = None) -> str:
         """Collect relevant course text with smart course isolation and TF-IDF weighting."""
         context_blocks = []
         total_len = 0
@@ -262,7 +281,8 @@ class AIService:
             except Exception as e:
                 logger.warning(f"Error loading courses in context: {e}")
 
-        target_code = self._detect_target_course(query) if query else None
+        if not target_code and query:
+            target_code = self._detect_target_course(query)
 
         course_dirs = [d for d in EXTRACTED_TEXT_DIR.iterdir() if d.is_dir()]
         if not course_dirs:
@@ -277,6 +297,10 @@ class AIService:
         raw_tokens = [q.lower() for q in re.findall(r"\w+", query)] if query else []
         significant_tokens = [t for t in raw_tokens if t not in STOPWORDS and len(t) > 1]
 
+        # Deteksi pencarian pertemuan/week spesifik (misal: "week 3", "pertemuan 2")
+        week_match = re.search(r"(?:week|pertemuan|minggu|sesi)\s*(\d{1,2})", query.lower()) if query else None
+        target_week = int(week_match.group(1)) if week_match else None
+
         scored_files = []
         for file_path, is_target_dir in candidate_files:
             try:
@@ -290,6 +314,14 @@ class AIService:
                         score += 1000
                     else:
                         score -= 500
+
+                # Jika ada target week/pertemuan dan file ini cocok, beri boost masif
+                if target_week:
+                    file_week = self._module_week_number(file_path.stem)
+                    if file_week == target_week:
+                        score += 800
+                    elif f"{target_week}" in stem_lower:
+                        score += 400
 
                 if significant_tokens:
                     for token in significant_tokens:
@@ -673,15 +705,26 @@ Gunakan gaya bahasa santai mahasiswa-friendly dan formatting Markdown Telegram y
         except Exception as e:
             return f"❌ Terjadi kesalahan saat membaca daftar tugas: {e}"
 
-    def answer_query(self, user_question: str) -> str:
-        """Answer user's question with a proactive, insightful, and supportive AI tutor persona."""
-        context = self._get_relevant_context(query=user_question, max_chars=35000)
+    def answer_query(self, user_question: str, chat_id: Optional[int] = None) -> str:
+        """Answer user's question with persistent multi-turn memory, active course resolution,
+        and system activity awareness."""
+        from src.conversation_manager import ConversationManager
+        conv_mgr = ConversationManager()
 
-        # Check for any pending assignments to provide proactive alerts if relevant
+        # 1. Deteksi mata kuliah dari pertanyaan saat ini atau dari riwayat chat sebelumnya
+        target_code = self._detect_target_course(user_question)
+        if not target_code and chat_id:
+            target_code = conv_mgr.detect_active_course_from_history(chat_id, self._detect_target_course)
+            if target_code:
+                logger.info(f"Resolved active course from conversation history for chat_id={chat_id}: {target_code}")
+
+        # 2. Ambil konteks materi kuliah relevan (RAG)
+        context = self._get_relevant_context(query=user_question, max_chars=35000, target_code=target_code)
+
+        # 3. Ambil konteks tugas pending & tugas yang baru saja dikerjakan bot
         assignments_alert = ""
         pending = self._load_pending_assignments()
         if pending:
-            target_code = self._detect_target_course(user_question)
             if target_code:
                 course_pending = [p for p in pending if target_code.lower() in p.get("course_name", "").lower()]
                 if course_pending:
@@ -690,38 +733,64 @@ Gunakan gaya bahasa santai mahasiswa-friendly dan formatting Markdown Telegram y
                         for p in course_pending
                     )
 
-        prompt = f"""
-Kamu adalah AI Asisten & Study Partner Pintar Mahasiswa Universitas Multimedia Nusantara (UMN).
+        recent_assignments_summary = conv_mgr.get_recent_assignments_summary(max_items=3)
+        recent_activity_block = ""
+        if recent_assignments_summary:
+            recent_activity_block = f"\n{recent_assignments_summary}\n(Catatan: Jika mahasiswa menyinggung tugas yang baru dikerjakan, gunakan informasi riwayat pengerjaan tugas di atas.)\n"
+
+        # 4. Ambil riwayat percakapan sebelumnya
+        chat_history_str = ""
+        if chat_id:
+            chat_history_str = conv_mgr.format_history_for_prompt(chat_id, max_turns=10)
+
+        history_block = ""
+        if chat_history_str:
+            history_block = f"""
+=== RIWAYAT PERCAKAPAN SEBELUMNYA DENGAN MAHASISWA INI (PENTING: JANGAN LUPA TOPIK INI) ===
+{chat_history_str}
+========================================================================================
+"""
+
+        prompt = f"""Kamu adalah AI Asisten & Study Partner Pintar Mahasiswa Universitas Multimedia Nusantara (UMN).
 Kamu memiliki kepribadian yang **proaktif, suportif, berinisiatif tinggi, dan solutif** (seperti kakak tingkat atau mentor pintar yang selalu satu langkah lebih maju).
 
 === KONTEKS MATERI KULIAH DARI E-LEARNING ===
 {context}
 {assignments_alert}
-
-=== PERTANYAAN MAHASISWA ===
+{recent_activity_block}
+{history_block}
+=== PESAN / PERTANYAAN TERBARU MAHASISWA ===
 {user_question}
 
-=== PANDUAN MENJAWAB PROAKTIF & ANTI-AI-SLOP ===
-1. **Akurat & Berdasarkan Fakta**:
+=== PANDUAN MENJAWAB PROAKTIF & KONSISTENSI PERCAKAPAN ===
+1. **Memori & Konteks Percakapan Multi-Turn**:
+   - Jika mahasiswa merujuk pada obrolan sebelumnya (seperti "iya", "bukan yang itu", "maksud gua yang week 3", "tugas tadi salah", "soal dapat darimana"), PAHAMI konteksnya dari Riwayat Percakapan dan Riwayat Tugas di atas.
+   - Jangan pernah bertindak seperti orang asing yang baru pertama kali menyapa jika sudah ada riwayat obrolan.
+   - Jangan menyuruh mahasiswa mengulang hal yang sudah pernah dia sebutkan sebelumnya.
+
+2. **Akurat & Berdasarkan Fakta**:
    - Sebutkan nama mata kuliah dan kode mata kuliah secara jelas di awal jawaban jika pertanyaan spesifik ke suatu matkul.
    - Jawab berdasarkan dokumen materi/RPKPS yang tersedia. Jika informasi detail tertentu belum ada di slide, katakan dengan jujur dan berikan insight umum yang relevan.
 
-2. **Bebas dari AI Slop (Anti-Throat Clearing & Anti-Cliché)**:
+3. **Bebas dari AI Slop (Anti-Throat Clearing & Anti-Cliché)**:
    - DILARANG membuka dengan basa-basi klise: "Tentu!", "Tentu saja!", "Dalam era digital saat ini...", "Seiring pesatnya perkembangan...", "Seperti yang kita ketahui...".
    - Langsung ke inti topik pada kalimat pertama.
    - Hindari buzzword kosong ("holistik", "game-changer", "krusial"). Gunakan terminologi teknis konkret.
 
-3. **Proactive Value-Add (Inisiatif & Persiapan)**:
-   - Berikan **Tips Persiapan / Actionable Advice**: Apa yang sebaiknya dipersiapkan mahasiswa (contoh: tools/software yang perlu di-install, konsep dasar yang perlu dipahami dulu, slide/referensi yang perlu dibaca).
-   - Hubungkan topik ini dengan relevansi praktiknya (kenapa materi ini penting di dunia industri / skripsi).
+4. **Proactive Value-Add (Inisiatif & Persiapan)**:
+   - Berikan tips persiapan konkret atau langkah teknis yang relevan dengan topik.
+   - Di akhir jawaban, tawarkan 2-3 opsi kelanjutan yang spesifik dan relevan dengan alur percakapan saat ini.
 
-4. **Tawaran Bantuan Lanjutan (Actionable Next Steps)**:
-   - Di akhir jawaban, **SELALU** tawarkan 2-3 opsi kelanjutan yang spesifik dan menarik agar mahasiswa bisa langsung memilih, contoh:
-     - 📌 *1. Rangkuman intisari / cheat sheet poin-poin krusial materi ini*
-     - 📌 *2. Latihan soal / kuis kilat 3 pertanyaan untuk uji pemahaman*
-     - 📌 *3. Penjelasan roadmap / materi pertemuan berikutnya*
-     - *(atau tawarkan bantuan kerjakan tugas jika ada tugas terkait)*
+Format jawaban menggunakan Markdown Telegram yang rapi, terstruktur (bold, bullet points, emoji yang pas), dan komunikatif."""
 
-Format jawaban menggunakan Markdown Telegram yang rapi, terstruktur (bold, bullet points, emoji yang pas), dan komunikatif.
-"""
-        return self._generate_with_fallback(prompt)
+        # Simpan pesan user ke riwayat
+        if chat_id:
+            conv_mgr.add_user_message(chat_id, user_question)
+
+        response_text = self._generate_with_fallback(prompt)
+
+        # Simpan respons bot ke riwayat jika berhasil
+        if chat_id and response_text and not response_text.startswith("⚠️") and not response_text.startswith("❌"):
+            conv_mgr.add_assistant_message(chat_id, response_text)
+
+        return response_text

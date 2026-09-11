@@ -48,6 +48,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• 📚 `/courses` - Cek daftar mata kuliah terdaftar\n"
         f"• 📝 `/kerjakan` - AI kerjakan tugas & buat dokumen resmi UMN (.docx)\n"
         f"• 🚀 `/kumpul` - One-click submit tugas yang sudah dibuat ke Moodle\n"
+        f"• 🧹 `/clear` - Bersihkan riwayat ingatan percakapan bot\n"
         f"• 🤖 `/model` - Ganti provider/model LLM (Gemini / OpenRouter)\n"
         f"• ⚙️ `/id` - Cek Chat ID kamu (untuk konfigurasi `.env`)\n\n"
         f"💡 **Tanya Langsung:**\n"
@@ -428,19 +429,32 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await status_msg.edit_text(f"❌ Error saat sync: {e}")
 
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reset riwayat ingatan percakapan bot."""
+    chat_id = update.effective_chat.id
+    from src.conversation_manager import ConversationManager
+    conv_mgr = ConversationManager()
+    conv_mgr.clear_history(chat_id)
+    await update.message.reply_text(
+        "🧹 **Ingatan percakapan telah dibersihkan!**\n\n"
+        "Kita mulai topik baru yang segar. Ada materi kuliah atau tugas yang mau dibahas?",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_query = update.message.text if update.message else ""
     if not user_query or user_query.startswith("/"):
         return
 
-    logger.info(f"Received user query: {user_query[:60]}")
+    chat_id = update.effective_chat.id
+    logger.info(f"Received user query (chat_id={chat_id}): {user_query[:60]}")
 
     try:
         # Send typing action
         await update.message.chat.send_action("typing")
 
         loop = asyncio.get_running_loop()
-        answer = await loop.run_in_executor(None, ai_service.answer_query, user_query)
+        answer = await loop.run_in_executor(None, ai_service.answer_query, user_query, chat_id)
 
         if not answer:
             answer = "ℹ️ Maaf, tidak ada respons yang dihasilkan."
@@ -480,6 +494,8 @@ def create_bot_app():
     app.add_handler(CommandHandler("courses", courses_command))
     app.add_handler(CommandHandler("kerjakan", kerjakan_command))
     app.add_handler(CommandHandler("kumpul", kumpul_command))
+    app.add_handler(CommandHandler("clear", clear_command))
+    app.add_handler(CommandHandler("reset", clear_command))
     app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("sync", sync_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
