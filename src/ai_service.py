@@ -431,10 +431,12 @@ class AIService:
         Token dipisah [-_] supaya 'EM105' tidak salah terbaca sebagai minggu.
         """
         for token in re.split(r"[-_]+", file_stem.lower()):
+            token = token.strip()  # "pertemuan 12 " (dari "Pertemuan 12 - Topic") harus di-strip
             m = re.fullmatch(r"m(\d{1,2})", token)
             if m:
                 return int(m.group(1))
-            m = re.fullmatch(r"(?:week|pertemuan|sesi|session|minggu)\s*(\d{1,2})", token)
+            # "pertemuan ke 1" adalah format nyata file MSC5233 di e-learning UMN
+            m = re.fullmatch(r"(?:week|pertemuan|sesi|session|minggu)\s*(?:ke\s*)?(\d{1,2})", token)
             if m:
                 return int(m.group(1))
         return None

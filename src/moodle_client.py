@@ -366,8 +366,8 @@ class MoodleClient:
             if existing_path.exists() and existing_path.stat().st_size > 0:
                 return {"title": title, "path": str(existing_path), "is_new": False}
 
-            # Unduh file
-            dres = requests.get(target_download_url, stream=True, timeout=30, allow_redirects=True)
+            # Unduh file menggunakan session Moodle (agar cookie/auth terjaga jika link SharePoint UMN internal)
+            dres = self.session.get(target_download_url, stream=True, timeout=30, allow_redirects=True)
             if dres.status_code == 200:
                 cd = dres.headers.get("content-disposition", "")
                 if "filename=" in cd:
