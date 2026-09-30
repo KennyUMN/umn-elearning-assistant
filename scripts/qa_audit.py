@@ -812,6 +812,32 @@ def test_model_list():
             f"service chain matches constant={svc.models_to_try == chain}"
     check("13. Model List", "AIService uses GEMINI_FALLBACK_CHAIN", _service_uses_constant)
 
+    def _stale_default_migrates():
+        """llm_state.json lama alias 'auto-fallback' harus ikut default terbaru."""
+        import json as _json
+        import tempfile
+        from pathlib import Path
+        import src.ai_service as ai
+
+        orig = ai.LLM_STATE_FILE
+        tmp = Path(tempfile.mkdtemp()) / "llm_state.json"
+        try:
+            ai.LLM_STATE_FILE = tmp
+
+            tmp.write_text(_json.dumps({"provider": "gemini",
+                                        "model": "gemini-3.7-flash (auto-fallback)"}))
+            stale = ai.get_llm_state()["model"]
+            want = ai.MODEL_PRESETS["gemini"]["default"]
+
+            tmp.write_text(_json.dumps({"provider": "gemini", "model": "gemini-3.5-flash"}))
+            explicit = ai.get_llm_state()["model"]
+        finally:
+            ai.LLM_STATE_FILE = orig
+
+        ok = stale == want and explicit == "gemini-3.5-flash"
+        return ok, f"stale->{stale!r} (want {want!r}); explicit kept={explicit!r}"
+    check("13. Model List", "stale auto-fallback state migrates, explicit kept", _stale_default_migrates)
+
     def _openrouter_default_live():
         import os
         from dotenv import load_dotenv

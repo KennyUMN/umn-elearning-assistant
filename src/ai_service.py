@@ -42,17 +42,18 @@ VALID_PROVIDERS = ("gemini", "openrouter")
 # `scripts/check_models.py` memverifikasi daftar ini dan bisa dijalankan ulang
 # berkala; ia juga menulis MODEL_PRESETS di bawah bila ada yang perlu diganti.
 GEMINI_FALLBACK_CHAIN = [
-    "models/gemini-3.7-flash",   # default: cepat +/−/− tanpa preview suffix
+    "models/gemini-3.8-flash",   # newest stable; default
+    "models/gemini-3.7-flash",
     "models/gemini-3.1-flash-lite",
     "models/gemini-flash-lite-latest",
 ]
 
 MODEL_PRESETS = {
     "gemini": {
-        "default": "gemini-3.7-flash (auto-fallback)",
+        "default": "gemini-3.8-flash (auto-fallback)",
         "options": [
-            "gemini-3.7-flash",
             "gemini-3.8-flash",
+            "gemini-3.7-flash",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
             "gemini-3.1-flash-lite",
@@ -81,10 +82,14 @@ def _load_llm_state() -> Dict[str, Any]:
             state = json.loads(LLM_STATE_FILE.read_text(encoding="utf-8"))
             provider = state.get("provider", "")
             if provider in VALID_PROVIDERS:
-                return {
-                    "provider": provider,
-                    "model": state.get("model") or MODEL_PRESETS[provider]["default"]
-                }
+                model = state.get("model") or MODEL_PRESETS[provider]["default"]
+                # State lama bisa mengunci model yang sudah tidak ada lagi (atau bukan
+                # default terbaru). Kalau yang tersimpan cuma alias "auto-fallback",
+                # ikuti default saat ini; pilihan model eksplisit tetap dihormati.
+                if "auto-fallback" in model and model != MODEL_PRESETS[provider]["default"]:
+                    logger.info(f"State LLM menunjuk '{model}' — memakai default terbaru.")
+                    model = MODEL_PRESETS[provider]["default"]
+                return {"provider": provider, "model": model}
         except Exception as e:
             logger.warning(f"Gagal membaca state LLM ({e}), pakai default dari .env.")
 
@@ -193,11 +198,11 @@ class AIService:
                 )
             return self._generate_openrouter(prompt, model)
 
-        # Provider: gemini (default: gemini-3.7-flash with auto-fallback)
+        # Provider: gemini (default: Gemini_FALLBACK_CHAIN[0] with auto-fallback)
         return self._generate_gemini(prompt, requested_model=model)
 
     def _generate_gemini(self, prompt: str, requested_model: Optional[str] = None) -> str:
-        """Attempt generation with Gemini 3.7 Flash as default and fallback to other models."""
+        """Generate via Gemini; coba model utama lalu seluruh GEMINI_FALLBACK_CHAIN."""
         if not self.is_configured():
             return "⚠️ Gemini API Key belum diatur di file `.env`."
 
