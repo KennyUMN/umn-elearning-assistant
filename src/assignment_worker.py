@@ -231,7 +231,12 @@ Strukturkan sections ke dalam format laporan terstruktur:
 1. BAB I PENDAHULUAN (Latar Belakang Masalah & Instruksi Soal)
 2. BAB II KAJIAN TEORI / LANDASAN KONSEP
 3. BAB III PEMBAHASAN & ANALISIS MENDALAM (Kupas tuntas seluruh poin pertanyaan/soal secara analitis)
-4. BAB IV KESIMPULAN & PENUTUP"""
+4. BAB IV KESIMPULAN & PENUTUP
+
+Catatan: nama bab di atas hanya kerangka. Yang menentukan nilai adalah isi
+tiap paragraf — pakai angka, nama metode, dan trade-off dari materi. Bab
+yang seluruh paragrafnya bisa dipindah ke esai lain tanpa perubahan berarti
+masih template, bukan tulisan."""
 
         return f"""Kamu adalah mahasiswa UMN bernama {name} (NIM {nim}) yang cerdas, berpikiran kritis, dan menguasai materi teknis.
 Kerjakan tugas kuliah berikut SEBAIK MUNGKIN, DENGAN KEDALAMAN AKADEMIS TINGGI, dan SESUAI FORMAT YANG DIMINTA SOAL.

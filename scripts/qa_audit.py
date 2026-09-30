@@ -959,6 +959,71 @@ def test_injection_fencing():
     check("14. Injection", "answer_query fences question + history", _answer_query_prompt_fenced)
 
 
+# ─────────────────────────────────────────────────────────────
+# 15. ANTI-SLOP  (regresi: output /kerjakan terlalu "AI")
+# ─────────────────────────────────────────────────────────────
+# Kalimat sungguhan dari file hasil /kerjakan, bukan contoh rekaan.
+REAL_SLOP_LINES = [
+    "tidak hanya berhenti pada persoalan infrastruktur, tetapi juga pada tingkat literasi",
+    "Peran ini menjadi salah satu fondasi utama dalam technopreneurship",
+    "maraknya kegagalan ini menjadi pelajaran bagi pelaku UMKM",
+    "Hal ini menunjukkan bahwa ketiga faktor tersebut saling berkaitan erat",
+    "Dengan demikian, identifikasi masalah menjadi langkah awal yang menentukan arah bisnis.",
+]
+
+
+def test_anti_slop():
+    from src.anti_slop import (AI_TICS, ANTI_SLOP_SYSTEM_INSTRUCTIONS, clean_text_slop,
+                               find_slop, sanitize_sections_slop)
+
+    def _catches_real_lines():
+        """Setiap baris yang benar-benar muncul di output lama harus terdeteksi."""
+        missed = [s[:40] for s in REAL_SLOP_LINES if not find_slop(s)]
+        return not missed, (f"all {len(REAL_SLOP_LINES)} slop lines caught"
+                            if not missed else f"MISSED: {missed}")
+    check("15. Anti-Slop", "detects slop present in real /kerjakan output", _catches_real_lines)
+
+    def _no_false_positive_on_clean():
+        clean = ("Akurasi ResNet pada BCCD mencapai 97,1%, naik dari 91,2% pada AlexNet "
+                 "setelah augmentasi. Kompleksitas waktu O(n^2) dengan memori O(n).")
+        return not find_slop(clean), f"clean technical text flagged={bool(find_slop(clean))}"
+    check("15. Anti-Slop", "clean technical text not flagged", _no_false_positive_on_clean)
+
+    def _cliche_tail_removed():
+        out = clean_text_slop(
+            "Analisis menunjukkan pola yang jelas. "
+            "Dengan demikian, identifikasi masalah menentukan arah bisnis.")
+        return "Dengan demikian" not in out, f"tail removed={'Dengan demikian' not in out}"
+    check("15. Anti-Slop", "cliched conclusion tail removed", _cliche_tail_removed)
+
+    def _no_broken_sentences():
+        """Filter tidak boleh memotong kalimat jadi tidak grammatis."""
+        src = "Metode ini menghasilkan Recall 0.89 pada dataset BCCD dengan presisi 0.91."
+        out = clean_text_slop(src)
+        intact = "Recall 0.89" in out and "presisi 0.91" in out
+        return intact, f"content preserved={intact}"
+    check("15. Anti-Slop", "filter preserves content (no mangled sentences)", _no_broken_sentences)
+
+    def _instructions_cover_tics():
+        """Instruksi prompt harus menyebut pola yang filterdefinisi."""
+        need = ["tidak hanya", "kesimpulan", "spesifik"]
+        missing = [n for n in need if n.lower() not in ANTI_SLOP_SYSTEM_INSTRUCTIONS.lower()]
+        return not missing, (f"instructions cover {len(need)} key patterns"
+                             if not missing else f"missing: {missing}")
+    check("15. Anti-Slop", "system instructions cover key patterns", _instructions_cover_tics)
+
+    def _self_review_present():
+        return "PEMERIKSAAN DIRI" in ANTI_SLOP_SYSTEM_INSTRUCTIONS, \
+            "instructions demand a self-review pass before returning JSON"
+    check("15. Anti-Slop", "self-review step required", _self_review_present)
+
+    def _empty_dropped():
+        secs = [{"heading": "H", "paragraphs": ["Isi nyata.", "secara keseluruhan", ""], "bullets": []}]
+        out = sanitize_sections_slop(secs)[0]["paragraphs"]
+        return out == ["Isi nyata."], f"paragraphs={out}"
+    check("15. Anti-Slop", "empty filler dropped, real text kept", _empty_dropped)
+
+
 def main():
     test_imports()
     test_conversation()
@@ -974,6 +1039,7 @@ def main():
     test_login_strictness()
     test_model_list()
     test_injection_fencing()
+    test_anti_slop()
     fails = report()
     return 1 if fails else 0
 
