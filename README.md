@@ -4,11 +4,12 @@ Bot Telegram yang menyambung langsung ke E-Learning UMN. Tarik materi kuliah, ki
 
 ![Demo](docs/demo.gif)
 
-<p align="center">
-  <a href="docs/architecture.html"><b>🗺️ Buka diagram arsitektur interaktif →</b></a>
-</p>
+<div align="center">
+  <img src="docs/architecture.svg" alt="Diagram arsitektur UMN E-Learning Assistant: mahasiswa mengirim chat ke Telegram Bot, bot bicara ke Moodle Client untuk login dan scrape E-Learning UMN, materi di-download ke Materials Cache lalu di-ekstrak Document Parser jadi Extracted Text, yang jadi konteks RAG untuk AI Service dan LLM Provider. Cron Scheduler menjalankan sync, briefing, reminder, dan assignment worker." width="100%">
+</div>
 
-Diagramnya interaktif: klik node untuk lihat file sumbernya, klik relationship untuk lihat label dan arahnya, ada toggle tema terang/gelap. Buka `docs/architecture.html` di browser.
+<p align="center"><sub>Versi interaktif (klik node untuk lihat file sumbernya):
+<a href="docs/architecture.html">docs/architecture.html</a></sub></p>
 
 ---
 
