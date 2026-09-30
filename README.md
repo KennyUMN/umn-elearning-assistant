@@ -1,129 +1,132 @@
-# 🎓 UMN E-Learning Assistant (Telegram Bot + Cron Auto-Sync + AI RAG)
+# 🎓 UMN E-Learning Assistant
+
+Bot Telegram yang menyambung langsung ke E-Learning UMN. Tarik materi kuliah, kirim ringkasan pagi sebelum kelas, ingatkan deadline, dan bisa menulis draf tugas berformat dokumen resmi.
 
 ![Demo](docs/demo.gif)
 
-Asisten pintar berbasis AI yang terhubung langsung ke **E-Learning Universitas Multimedia Nusantara (UMN)**, otomatis mengunduh materi kuliah (PDF, PPTX, Word), mengekstrak teks & slide, memantau deadline tugas, serta mengirimkan **Daily Morning Class Prep Briefing** dan **Assignment Reminder** langsung ke Telegram kamu.
+<p align="center">
+  <a href="docs/architecture.html"><b>🗺️ Buka diagram arsitektur interaktif →</b></a>
+</p>
+
+Diagramnya interaktif: klik node untuk lihat file sumbernya, klik relationship untuk lihat label dan arahnya, ada toggle tema terang/gelap. Buka `docs/architecture.html` di browser.
 
 ---
 
-## ✨ Fitur Utama
+## Yang membuatnya beda dari chatbot RAG biasa
 
-1. **Auto-Downloader & Parser (`sync.py`)**:
-   - Login otomatis ke E-Learning UMN (`https://elearning.umn.ac.id/`).
-   - Mengunduh materi, slide, dan lampiran tugas semester aktif ke `data/materials/`.
-   - Mengekstrak teks dari PDF, PPTX, dan DOCX ke `data/extracted_text/`.
-2. **Daily Morning Class Prep Briefing (Cron Job - 07:00 WIB)**:
-   - Setiap pagi sebelum kelas dimulai, AI merangkum materi apa yang perlu dipersiapkan, slide mana yang harus dibaca, dan apa inti bahasan hari ini berdasarkan jadwal kuliah & silabus/RPKPS.
-3. **Daily Assignment & Deadline Reminder (Cron Job - 18:00 WIB)**:
-   - Memeriksa tugas di e-learning, mendeteksi mana yang belum disubmit, menghitung sisa waktu deadline, dan mengirim reminder prioritas.
-4. **Assignment Auto-Worker (AI Kerjakan Tugas)**:
-   - `/kerjakan` — daftar tugas pending bernomor.
-   - `/kerjakan 1` — AI mengambil soal & lampiran dari e-learning, membaca materi kuliah terkait, mengerjakan tugas sesuai format soal, lalu mengirim file `.docx` ke Telegram.
-   - Cron harian (default 19:00 WIB) otomatis mengerjakan tugas baru yang belum pernah dikerjakan (maks 2 per hari).
-   - ⚠️ **Hasil hanya untuk direview** — pengumpulan tetap manual di e-learning.
-5. **Interactive AI Tutor (Telegram Bot)**:
-   - Tanya langsung di chat Telegram kapan saja: *"Jelaskan konsep TOGAF di materi Enterprise Architecture week 1"*, *"Apa saja kriteria tugas English 3?"*, dll.
-6. **Perintah Telegram Lengkap**:
-   - `/briefing` - Buat briefing kelas hari ini secara instan.
-   - `/tugas` - Cek daftar tugas pending & deadline.
-   - `/sync` - Memicu sinkronisasi materi & tugas terbaru dari e-learning.
-   - `/courses` - Melihat daftar mata kuliah yang terdeteksi.
-   - `/kerjakan` - AI mengerjakan tugas & kirim file .docx siap review.
-   - `/model` - Ganti provider/model LLM (Gemini / OpenRouter) langsung dari chat.
-   - `/id` - Melihat Telegram Chat ID kamu.
-7. **Multi-Provider LLM (Gemini default + OpenRouter)**:
-   - Default pakai **Google Gemini** (flash-lite, auto-fallback).
-   - Bisa ganti ke **OpenRouter** (mis. `minimax/minimax-m3:free`, gratis) kapan saja via perintah `/model` di Telegram atau variabel `LLM_PROVIDER` di `.env` — tanpa redeploy.
+**Tahu minggu ke berapa.** Briefing pagi membaca `SEMESTER_START_DATE` dan `SEMESTER_BREAKS` dari `.env`, lalu mencocokkannya dengan roadmap mingguan di file RPKPS. Yang dikirim bukan "materi hari ini" generik, tapi topik minggu berjalan. Kalau modul minggu itu belum ada di E-Learning, bot bilang terus terang, bukan mengarang.
+
+**Nulis dokumen, bukan cuma ngasih jawaban.** `/kerjakan` menarik deskripsi dan lampiran soal dari e-learning, membaca materi kuliah yang relevan, lalu menulis `.docx` dengan format resmi UMN: A4, margin 4-4-3-3, Times New Roman 12pt spasi 1.5, cover lengkap, dan blok kode Consolas.
+
+**Paham konteks percakapan.** Bot ingat 14 pesan terakhir per chat, jadi "lanjut yang minggu 3 dong" atau "soal yang tadi salah" tetap nyambung tanpa kamu mengulang semuanya.
+
+**Paham status tugas, bukan cuma judulnya.** Data diambil dari Timeline API Moodle, lalu dicek ulang ke halaman tugas karena Timeline tidak membawa status submit. Tugas yang sudah kamu kumpulkan tidak muncul lagi sebagai pending.
 
 ---
 
-## 🚀 Panduan Setup Cepat
+## Fitur
 
-> ⏱️ Butuh: Python 3.10+, akun SSO UMN, Gemini API key (gratis), bot Telegram.
+| | |
+|---|---|
+| **Auto-sync** | Tarik materi, slide, dan lampiran dari E-Learning, termasuk Google Docs, SharePoint, dan OneDrive yang biasanya gagal di-scrape. |
+| **Morning briefing** | 07:00 WIB. Ringkasan materi per mata kuliah hari itu, plus checklist persiapan. |
+| **Deadline reminder** | 18:00 WIB. Daftar tugas pending lengkap dengan sisa waktu. |
+| **`/kerjakan`** | AI menulis draf tugas `.docx` dari soal + materi. Maks 2 per hari via cron, 3 via perintah manual. |
+| **`/kumpul`** | Submit hasil ke Moodle lewat draft repository Moodle, bukan upload manual. |
+| **AI tutor** | Chat bebas. Menjawab dari materi yang sudah di-cache, bukan dari ingatan model. |
+| **Multi-provider** | Gemini (default, 3.8-flash) atau OpenRouter. Ganti dari chat dengan `/model`. |
 
-### 1. Install & Salin Konfigurasi
+### Perintah Telegram
+
+| Perintah | Fungsi |
+|---|---|
+| `/briefing` | Briefing kelas hari ini, on-demand |
+| `/tugas` | Daftar tugas pending + sisa deadline |
+| `/kerjakan [nomor\|semua]` | AI kerjakan tugas, kirim `.docx` |
+| `/kumpul [nomor]` | Submit hasil ke Moodle |
+| `/sync` | Tarik materi & tugas terbaru |
+| `/courses` | Daftar mata kuliah terdeteksi |
+| `/model [provider] [model]` | Lihat atau ganti LLM aktif |
+| `/clear` | Hapus riwayat percakapan |
+| `/id` | Chat ID kamu (untuk isi `.env`) |
+
+Semua perintah hanya menerima pesan dari `TELEGRAM_CHAT_ID` kamu. Guard-nya di satu titik registrasi handler, jadi tidak ada perintah yang bisa dipakai orang lain.
+
+---
+
+## Setup
+
+Butuh Python 3.10+, akun SSO UMN, API key Gemini (gratis), dan bot Telegram.
+
 ```bash
 git clone https://github.com/KennyUMN/umn-elearning-assistant.git
 cd umn-elearning-assistant
 python3 -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Lalu buka `.env` dan isi:
-| Variabel | Isi | Cara dapetin |
+Isi `.env`:
+
+| Variabel | Isi | Cara dapat |
 |---|---|---|
-| `UMN_USERNAME` | NIM / username SSO UMN | — |
-| `UMN_PASSWORD` | Password SSO UMN | — |
+| `UMN_USERNAME` | NIM / username SSO UMN | - |
+| `UMN_PASSWORD` | Password SSO UMN | - |
 | `GEMINI_API_KEY` | API key Gemini | Gratis di [Google AI Studio](https://aistudio.google.com/) |
-| `TELEGRAM_BOT_TOKEN` | Token bot kamu | Chat [@BotFather](https://t.me/BotFather), ketik `/newbot` |
-| `TELEGRAM_CHAT_ID` | ID chat Telegram kamu | Kirim pesan ke bot kamu lalu jalankan `/id`, atau cek [@userinfobot](https://t.me/userinfobot) |
+| `TELEGRAM_BOT_TOKEN` | Token bot | [@BotFather](https://t.me/BotFather), lalu `/newbot` |
+| `TELEGRAM_CHAT_ID` | Chat ID kamu | Kirim pesan ke bot, lalu `/id` |
+| `SEMESTER_START_DATE` | `YYYY-MM-DD` hari kuliah pertama | Kalender akademik UMN |
+
+Daftar lengkap ada di [`.env.example`](.env.example). `SEMESTER_BREAKS` diisi kalau ada libur di tengah semester, supaya nomor minggu tetap sinkron setelah UTS.
 
 <details>
-<summary><b>🔀 Ganti Model LLM (Gemini / OpenRouter)</b></summary>
+<summary><b>🔀 Ganti model LLM</b></summary>
 
-Default provider adalah **Gemini**. Untuk pakai model lain via OpenRouter (contoh: `minimax/minimax-m3:free` gratis):
+Default-nya Gemini 3.8 Flash. Dari Telegram, tanpa restart:
 
-**Cara 1 — dari Telegram (tanpa restart):**
 ```
 /model                          # lihat provider & model aktif
-/model openrouter               # pindah ke MiniMax M3 (free) via OpenRouter
+/model openrouter               # pindah ke OpenRouter
 /model openrouter <model_id>    # model OpenRouter lain
 /model gemini                   # balik ke Gemini
 ```
-Pilihan ini tersimpan di `data/metadata/llm_state.json` dan bertahan meski service restart.
 
-**Cara 2 — dari `.env`:**
-```env
-LLM_PROVIDER=openrouter              # gemini (default) | openrouter
-OPENROUTER_API_KEY=sk-or-v1-...      # gratis di https://openrouter.ai/keys
-OPENROUTER_MODEL=minimax/minimax-m3:free
-# GEMINI_MODEL=gemini-flash-lite-latest   # opsional: paksa model Gemini tertentu
-```
-> `OPENROUTER_API_KEY` wajib diisi sebelum pindah ke `openrouter`.
+Pilihan ini tersimpan di `data/metadata/llm_state.json` dan bertahan meski service restart. Daftar model OpenRouter yang ada sudah diverifikasi 2026-09-30; slug gratis rot cepat, jadi jalankan `python scripts/check_models.py` kalau dapat error model not found.
 
 </details>
 
-### 2. Atur Jadwal Mata Kuliah Mingguan
-Buka `data/metadata/class_schedule.json` dan sesuaikan jadwal kuliah kamu per hari (Senin–Jumat) agar briefing pagi sesuai kelas kamu. Isi minimal: `course`, `code`, `time`, `room` — kode matkul dipakai untuk mencocokkan dengan materi di e-learning.
+### Jadwal kuliah
 
-Lalu audit otomatis (login e-learning, deteksi semua matkul terdaftar, cek silang dengan jadwal):
+Buka `data/metadata/class_schedule.json` dan isi hari/jam/ruang sesuai jadwal kamu. Kode matkul dipakai untuk mencocokkan dengan materi di e-learning.
+
 ```bash
-python scripts/sync_schedule.py          # deteksi + audit
-python scripts/sync_schedule.py --sync   # + unduh & ekstrak materi juga
+python scripts/sync_schedule.py          # deteksi matkul + audit silang dengan jadwal
+python scripts/sync_schedule.py --sync   # plus unduh dan ekstrak materinya
 ```
 
-> ℹ️ Daftar matkul selalu terdeteksi otomatis dari e-learning; yang harus diisi manual hanya **hari/jam/ruang** karena info itu tidak tersedia di Moodle. Jangan lupa isi `SEMESTER_START_DATE` di `.env` agar briefing tahu minggu semester ke-N.
+Daftar mata kuliah selalu terdeteksi otomatis dari e-learning. Yang perlu diisi manual hanya hari/jam/ruang, karena Moodle tidak menyediakan info itu.
 
-### 3. Jalankan
+### Jalankan
 
-**Opsi A: Tes sinkronisasi pertama kali (CLI)**
 ```bash
-python sync.py
+python sync.py    # tes sinkronisasi dulu
+python main.py    # bot + cron scheduler
 ```
-
-**Opsi B: Jalankan bot Telegram + cron scheduler otomatis**
-```bash
-python main.py
-```
-
-Kalau `/sync` sukses dan bot bales chat → selesai. 🎉
 
 <details>
-<summary><b>🐳 Alternatif: Docker (tanpa setup Python)</b></summary>
+<summary><b>🐳 Alternatif Docker</b></summary>
 
 ```bash
-cp .env.example .env   # isi dulu seperti langkah 1
+cp .env.example .env   # isi dulu
 docker compose up -d
 ```
 </details>
 
----
+<details>
+<summary><b>🤖 Malas setup manual? Pakai AI agent</b></summary>
 
-## 🤖 Malas Setup Manual? Pakai AI Agent
-
-Punya AI agent coding (Hermes, Claude Code, Codex, Cursor, dll.)? Copy-paste prompt ini ke agent kamu, dia yang bakal ngedeploy semuanya sambil nanya bagian yang kurang:
+Copy-paste prompt ini ke agent coding-mu:
 
 ```text
 Bantu aku deploy project di https://github.com/KennyUMN/umn-elearning-assistant.git
@@ -134,35 +137,95 @@ Caraku:
 2. Setup Python virtual environment + install dependencies.
 3. Tanyakan kepadaku nilai-nilai .env satu per satu dengan penjelasan singkat
    cara mendapatkannya (UMN_USERNAME, UMN_PASSWORD, GEMINI_API_KEY,
-   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) — jangan minta semua sekaligus.
+   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SEMESTER_START_DATE)
+   - jangan minta semua sekaligus.
 4. Tulis file .env dari jawabanku.
 5. Bantu aku mengisi data/metadata/class_schedule.json sesuai jadwal kuliahku.
-6. Jalankan python sync.py untuk tes sinkronisasi pertama kali; kalau error,
-   diagnosa dan perbaiki sampai sukses.
-7. Terakhir, jalankan python main.py di background dan pastikan bot merespons
-   /courses di Telegram.
+6. Jalankan python sync.py; kalau error, diagnosa dan perbaiki sampai sukses.
+7. Jalankan python main.py dan pastikan bot merespons /courses di Telegram.
 
-Jelaskan setiap langkah dalam bahasa sederhana karena aku belum familiar
-dengan AI agent maupun deployment.
+Jelaskan setiap langkah dalam bahasa sederhana.
+```
+</details>
+
+---
+
+## Cara kerjanya
+
+```
+Mahasiswa --chat--> Telegram Bot --> AI Service --> Gemini / OpenRouter
+                         |                  ^
+                         |             RAG context
+                         v                  |
+                    Moodle Client      Extracted Text
+                         |                  ^
+                         v                  |
+               Document Parser --> Materials Cache
+                         ^                  |
+                         +------- E-Learning UMN
+
+Cron Scheduler --> sync harian, briefing 07:00, reminder 18:00, auto-worker 19:00
+```
+
+Semua materi dan teks hasil ekstraksi ada di `data/`, yang di-gitignore. Tidak ada database dan tidak ada migrations. Kalau hilang, jalankan `/sync` lagi.
+
+---
+
+## Batasan yang perlu kamu tahu
+
+**Hasil `/kerjakan` itu draf, wajib dibaca dulu.** AI bisa salah paham soal, dan yang dinilai dosen pada akhirnya adalah kamu. Prompt-nya sudah didesain supaya model menulis jujur: kalau angka tidak ada di materi, dia wajib bilang tidak ada, bukan mengarang. Tapi itu tetap bukan jaminan.
+
+**Materi ajar bisa berubah, bot tidak.** Kalau dosen upload modul baru, jalankan `/sync`. Briefing membaca cache lokal, bukan scraping real-time.
+
+**Scraping bisa patah.** E-Learning UMN adalah Moodle, dan Moodle kadang mengubah tampilan. Kalau `/sync` tiba-tiba mengembalikan 0 mata kuliah, cek manual di browser. `moodle_client.py` sudah gagal-fast sejak commit `22e42ab`: ia tidak diam-diam lanjut dengan data kosong.
+
+**Cuma jalan di satu orang.** Guard `owner_only` itu disengaja. Kalau mau dipakai multi-user, perlu tabel role yang belum ada.
+
+**Dokumen dikirim untuk direview, bukan otomatis dikumpulkan.** `/kumpul` ada, tapi pemicunya di tangan kamu, bukan di cron.
+
+---
+
+## Struktur
+
+```
+umn-elearning-assistant/
+├── data/
+│   ├── materials/          # file asli dari e-learning
+│   ├── extracted_text/     # teks hasil ekstraksi, ini yang dibaca RAG
+│   ├── assignment_attachments/
+│   ├── assignments_output/ # hasil /kerjakan
+│   └── metadata/           # courses, assignments, jadwal, state
+├── src/
+│   ├── moodle_client.py     # login, scrape, submit
+│   ├── document_parser.py   # PDF/PPTX/DOCX ke teks
+│   ├── ai_service.py        # RAG, prompt, dispatch LLM
+│   ├── telegram_bot.py      # handler + guard
+│   ├── scheduler.py         # cron
+│   ├── assignment_worker.py # pipeline /kerjakan
+│   ├── academic_styler.py   # format dokumen UMN
+│   ├── anti_slop.py         # filter pola tulis ala AI
+│   ├── conversation_manager.py
+│   └── config.py
+├── scripts/
+│   ├── sync_schedule.py
+│   ├── qa_audit.py          # 88 test
+│   └── check_models.py      # cek model LLM masih hidup
+├── docs/architecture.html   # diagram interaktif
+├── main.py
+└── sync.py
 ```
 
 ---
 
-## 📁 Struktur Direktori
-```text
-umn-elearning-assistant/
-├── data/
-│   ├── materials/          # File asli yang diunduh (PDF, PPTX, DOCX)
-│   ├── extracted_text/     # Teks hasil ekstraksi siap baca AI
-│   └── metadata/           # Data mata kuliah, tugas, dan jadwal
-├── src/
-│   ├── moodle_client.py    # Engine scraper login & fetcher E-Learning UMN
-│   ├── document_parser.py  # Parser PDF, PPTX, DOCX
-│   ├── ai_service.py       # Integrasi Gemini API & Prompting
-│   ├── telegram_bot.py     # Bot Telegram & handler chat
-│   ├── scheduler.py        # Cron scheduler harian (07:00 & 18:00 WIB)
-│   └── config.py           # Konfigurasi path & env
-├── sync.py                 # Standalone sync runner
-├── main.py                 # Runner bot + background cron
-└── requirements.txt        # Dependensi Python
+## Pengembangan
+
+```bash
+python scripts/qa_audit.py      # 88 test, jalan di CI tiap push
+python scripts/check_models.py  # pastikan nama model LLM tidak basi
 ```
+
+`check_models.py` itu penting. Nama model AI berubah cepat: Gemini 2.5 sudah dihapus Google, dan slug gratis OpenRouter rot tiap minggu. Tanpa cek berkala, daftar hardcode di `ai_service.py` akan diam-diam membuang request gagal setiap kali generate.
+
+## Lisensi
+
+MIT. Pakai buat sendiri, ganti, atau deploy ulang sesuka kamu.
