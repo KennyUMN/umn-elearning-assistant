@@ -2,6 +2,7 @@ import json
 import logging
 import asyncio
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from telegram import Update
@@ -33,6 +34,25 @@ logger = logging.getLogger("telegram_bot")
 
 ai_service = AIService()
 assignment_worker = AssignmentWorker()
+
+# Owner-only guard. Tanpa ini, siapa pun yang tahu @username bot bisa /kumpul
+# (menulis file ke akun Moodle asli) dan /kerjakan (memakai kuota LLM).
+OWNER_CHAT_ID = int(TELEGRAM_CHAT_ID) if TELEGRAM_CHAT_ID.strip().lstrip("-").isdigit() else None
+if OWNER_CHAT_ID is None:
+    logger.error("TELEGRAM_CHAT_ID tidak valid — semua pesan akan ditolak.")
+
+
+def owner_only(fn):
+    """Decorator: abort handler bila pengirim bukan owner."""
+    @wraps(fn)
+    async def guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat = update.effective_chat
+        if chat is None or OWNER_CHAT_ID is None or chat.id != OWNER_CHAT_ID:
+            logger.warning("Akses ditolak dari chat_id=%s", getattr(chat, "id", None))
+            return
+        return await fn(update, context)
+    return guard
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -168,11 +188,7 @@ async def _send_assignment_result(update: Update, result: dict, assign_index: Op
         f"{kumpul_hint}\n"
         f"• Atau unduh & review manual terlebih dahulu."
     )
-    for chunk in [text[i:i + 4000] for i in range(0, len(text), 4000)]:
-        try:
-            await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
-        except Exception:
-            await update.message.reply_text(chunk)
+    await _reply(update, text)
 
 
 async def kerjakan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -369,14 +385,27 @@ async def kumpul_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
 
+async def _reply(update: Update, text: str) -> None:
+    """Kirim teks panjang ke Telegram: coba Markdown, jatuh ke plain text kalau 400.
+
+    Output LLM penuh dengan "_" dan "*" liar yang membuat Telegram menolak
+    seluruh pesan. Satu helper ini dipakai semua jalur kirim yang panjang.
+    """
+    for chunk in [text[i:i + 4000] for i in range(0, len(text), 4000)]:
+        try:
+            await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await update.message.reply_text(chunk)
+
+
 async def briefing_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("☕ *Sedang meracik briefing persiapan kuliah hari ini...*", parse_mode=ParseMode.MARKDOWN)
     briefing = ai_service.generate_morning_briefing()
-    await update.message.reply_text(briefing, parse_mode=ParseMode.MARKDOWN)
+    await _reply(update, briefing)
 
 async def tugas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reminder = ai_service.generate_assignment_reminder()
-    await update.message.reply_text(reminder, parse_mode=ParseMode.MARKDOWN)
+    await _reply(update, reminder)
 
 async def courses_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not COURSES_FILE.exists():
@@ -459,20 +488,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not answer:
             answer = "ℹ️ Maaf, tidak ada respons yang dihasilkan."
 
-        # Chunk response if message is too long for Telegram (limit 4096 chars)
-        if len(answer) > 4000:
-            chunks = [answer[i:i+4000] for i in range(0, len(answer), 4000)]
-            for chunk in chunks:
-                try:
-                    await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
-                except Exception:
-                    await update.message.reply_text(chunk)
-        else:
-            try:
-                await update.message.reply_text(answer, parse_mode=ParseMode.MARKDOWN)
-            except Exception:
-                # Fallback to plain text if markdown parsing fails
-                await update.message.reply_text(answer)
+        await _reply(update, answer)
     except Exception as e:
         logger.exception(f"Error handling user message: {e}")
         try:
@@ -487,18 +503,20 @@ def create_bot_app():
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("id", id_command))
-    app.add_handler(CommandHandler("briefing", briefing_command))
-    app.add_handler(CommandHandler("tugas", tugas_command))
-    app.add_handler(CommandHandler("courses", courses_command))
-    app.add_handler(CommandHandler("kerjakan", kerjakan_command))
-    app.add_handler(CommandHandler("kumpul", kumpul_command))
-    app.add_handler(CommandHandler("clear", clear_command))
-    app.add_handler(CommandHandler("reset", clear_command))
-    app.add_handler(CommandHandler("model", model_command))
-    app.add_handler(CommandHandler("sync", sync_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Semua handler (command + free text) lewat owner_only — satu titik guard,
+    # tidak bisa ada handler yang lupa.
+    app.add_handler(CommandHandler("start", owner_only(start_command)))
+    app.add_handler(CommandHandler("id", owner_only(id_command)))
+    app.add_handler(CommandHandler("briefing", owner_only(briefing_command)))
+    app.add_handler(CommandHandler("tugas", owner_only(tugas_command)))
+    app.add_handler(CommandHandler("courses", owner_only(courses_command)))
+    app.add_handler(CommandHandler("kerjakan", owner_only(kerjakan_command)))
+    app.add_handler(CommandHandler("kumpul", owner_only(kumpul_command)))
+    app.add_handler(CommandHandler("clear", owner_only(clear_command)))
+    app.add_handler(CommandHandler("reset", owner_only(clear_command)))
+    app.add_handler(CommandHandler("model", owner_only(model_command)))
+    app.add_handler(CommandHandler("sync", owner_only(sync_command)))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, owner_only(handle_message)))
 
     return app
 

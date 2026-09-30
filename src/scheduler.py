@@ -37,10 +37,13 @@ def send_telegram_alert(text: str):
 
     try:
         res = requests.post(url, json=payload, timeout=15)
-        if res.status_code != 200:
-            logger.error(f"Failed to send Telegram alert: {res.text}")
-        else:
+        if res.status_code == 200:
             logger.info("Telegram scheduled alert delivered successfully.")
+            return
+        # Output LLM penuh dengan "_" dan "*" liar; Telegram 400 seluruh pesan.
+        # Retry polos sebagai plain text daripada diam-diam kehilangan briefing.
+        logger.warning(f"Telegram 400 pada parse_mode Markdown, retry plain: {res.text[:200]}")
+        requests.post(url, json={**payload, "parse_mode": None}, timeout=15)
     except Exception as e:
         logger.error(f"Error sending Telegram alert: {e}")
 

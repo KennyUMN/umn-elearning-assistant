@@ -26,6 +26,9 @@ data/metadata/assignments.json
 data/metadata/sync_state.json
 data/metadata/assignment_outputs.json
 data/metadata/llm_state.json
+data/metadata/qa_audit_report.json
+# Riwayat chat = transkrip percakapan coursework, jangan pernah di-commit
+data/metadata/chat_histories/
 data/assignments_output/*
 !data/assignments_output/.gitkeep
 data/assignment_attachments/*

@@ -1,14 +1,12 @@
 FROM python:3.11-slim
 
-# Set timezone to Asia/Jakarta (WIB) & install system tools and OCR
+# Set timezone to Asia/Jakarta (WIB)
 ENV TZ=Asia/Jakarta
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
+# tesseract/poppler tidak dipakai: parser hanya mengekstrak PDF/PPTX/DOCX (lihat
+# src/document_parser.py). Hapus baris ini kalau suatu saat OCR gambar diaktifkan.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tesseract-ocr \
-    tesseract-ocr-ind \
-    tesseract-ocr-eng \
-    poppler-utils \
     tzdata \
     curl \
     && rm -rf /var/lib/apt/lists/*

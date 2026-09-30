@@ -86,8 +86,13 @@ class MoodleClient:
                 self.is_logged_in = True
                 return True
 
-            self.is_logged_in = True
-            return True
+            # Tidak ada logout link DAN tidak mendarat di dashboard = login gagal
+            # (halaman maintenance, 2FA, atau layout Moodle berubah).)Dulu jalur ini
+            # jatuh-through ke True sehingga semua scrape berikutnya diam-diam kosong.
+            logger.error("Login tidak menghasilkan sesi — kemungkinan 2FA/maintenance/error. "
+                         "Cek https://elearning.umn.ac.id secara manual di browser.")
+            self.is_logged_in = False
+            return False
 
         except Exception as e:
             logger.error(f"Error during login: {e}")
@@ -543,7 +548,9 @@ class MoodleClient:
                         "title": title,
                         "url": canonical_url,
                         "status": "Pending",
-                        "is_submitted": False,
+                        # Timeline API tidak membawa status submission. None = belum
+                        # diketahui; pass HTML di get_assignments() yang mengisinya.
+                        "is_submitted": None,
                         "due_date": due_date_str,
                         "time_remaining": remaining_str,
                         "type": "quiz" if modname == "quiz" else "assignment",
@@ -563,16 +570,18 @@ class MoodleClient:
             if not self.login():
                 return []
 
-        all_assignments = []
-        seen_assign_ids = set()
+        # Dianotasi per-id, bukan per-daftar: scan HTML di bawah menimpa entri
+        # timeline dengan status submission asli. Sebelumnya timeline dikunci duluan
+        # sehingga tugas yang sudah dikumpulkan tetap tampil "pending" selamanya.
+        by_id = {}
 
         # Step 1: Ambil langsung dari Moodle Timeline API (Single Source of Truth untuk tugas & kuis aktif)
-        timeline_events = self.get_timeline_events()
-        for ev in timeline_events:
+        for ev in self.get_timeline_events():
             ev_id = ev.get("id") or ev.get("url")
-            if ev_id and ev_id not in seen_assign_ids:
-                seen_assign_ids.add(ev_id)
-                all_assignments.append(ev)
+            if ev_id:
+                by_id[ev_id] = ev
+
+        scanned = set()
 
         # Step 2: Scan halaman course untuk mendeteksi tugas/kuis yang mungkin tidak ada di timeline
         # (misal tugas tanpa batas waktu atau jika Timeline API kosong)
@@ -595,10 +604,11 @@ class MoodleClient:
                     id_match = re.search(r'[?&]id=(\d+)', assign_url)
                     assign_id = id_match.group(1) if id_match else assign_url
 
-                    # Deduplicate: skip jika sudah diambil dari timeline atau link sebelumnya
-                    if assign_id in seen_assign_ids:
+                    # Deduplicate per link yang sama saja. Entri timeline TIDAK di-skip:
+                    # halaman di bawah ini yang jadi sumber kebenaran status submission.
+                    if assign_id in scanned:
                         continue
-                    seen_assign_ids.add(assign_id)
+                    scanned.add(assign_id)
 
                     is_quiz = "/mod/quiz/" in assign_url
                     modtype = "quiz" if is_quiz else "assign"
@@ -650,7 +660,7 @@ class MoodleClient:
 
                         is_submitted = any(kw in submission_status.lower() for kw in ["submitted", "diajukan", "graded", "dinilai", "dikirim"])
 
-                        all_assignments.append({
+                        record = {
                             "id": assign_id,
                             "course_id": cid,
                             "course_name": course_name,
@@ -662,12 +672,25 @@ class MoodleClient:
                             "time_remaining": time_remaining,
                             "type": "quiz" if is_quiz else "assignment",
                             "modulename": modtype
-                        })
+                        }
+
+                        # Gabung dengan entri timeline: status submission dari
+                        # HTML menang, tapi deadline/timesort timeline lebih rapi.
+                        prev = by_id.get(assign_id, {})
+                        if prev.get("timesort") is not None:
+                            record["timesort"] = prev["timesort"]
+                        if due_date == "Not specified" and prev.get("due_date"):
+                            record["due_date"] = prev["due_date"]
+                            record["time_remaining"] = prev.get("time_remaining", time_remaining)
+
+                        by_id[assign_id] = record
                     except Exception as e:
                         logger.warning(f"Error fetching assignment {canonical_url}: {e}")
 
             except Exception as e:
                 logger.warning(f"Error reading assignments for course {course_name}: {e}")
+
+        all_assignments = list(by_id.values())
 
         # Urutkan berdasarkan waktu deadline terdekat
         all_assignments.sort(key=lambda x: x.get("timesort", 9999999999))
@@ -811,7 +834,9 @@ class MoodleClient:
                     conf_res = self.session.post(conf_action, data=conf_data, timeout=30, allow_redirects=True)
                     final_soup = BeautifulSoup(conf_res.text, "html.parser")
 
-            status_text = "Tersimpan"
+            # Status default kosong, BUKAN "Tersimpan" — default dulu membuat
+            # pengecekan di bawah selalu True sehingga upload gagal dilaporkan sukses.
+            status_text = ""
             table = final_soup.find("table", class_=lambda x: x and "generaltable" in x) or final_soup.find("div", class_="submissionstatustable")
             if table:
                 for row in table.find_all("tr"):
@@ -820,7 +845,23 @@ class MoodleClient:
                         status_text = txt
                         break
 
-            is_success = any(k.lower() in status_text.lower() for k in ["submitted", "draft", "diajukan", "tersimpan"]) or file_path.name in final_soup.get_text()
+            page_text = final_soup.get_text()
+            error_on_page = re.search(
+                r"could not be (?:added|saved|uploaded)|error uploading|"
+                r"filenames? or file sizes? are too long|invalid file",
+                page_text, re.IGNORECASE)
+            if error_on_page:
+                return {"ok": False, "status": status_text or "Rejected by Moodle",
+                        "error": f"Moodle menolak file: {error_on_page.group(0)}",
+                        "filename": file_path.name, "url": assign_url}
+
+            is_success = any(k.lower() in status_text.lower() for k in ["submitted", "draft", "diajukan"])
+
+            if not status_text and not is_success:
+                return {"ok": False, "status": "Tidak ditemukan",
+                        "error": "Status submission tidak bisa dibaca dari halaman Moodle — "
+                                 "kemungkinan form sudah ditutup. Cek manual di e-learning.",
+                        "filename": file_path.name, "url": assign_url}
 
             return {
                 "ok": is_success,

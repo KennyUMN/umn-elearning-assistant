@@ -476,6 +476,22 @@ def test_aliases_and_rag():
 # ─────────────────────────────────────────────────────────────
 # 7. TELEGRAM BOT COMMANDS
 # ─────────────────────────────────────────────────────────────
+class FakeUpdate:
+    """Minimal Update stub: hanya effective_chat yang dipakai owner_only."""
+
+    def __init__(self, chat_id):
+        self.effective_chat = type("Chat", (), {"id": chat_id})()
+
+
+class FakeCtx:
+    args = None
+
+
+def _run(coro):
+    import asyncio
+    return asyncio.new_event_loop().run_until_complete(coro)
+
+
 def test_telegram_commands():
     import src.telegram_bot as tb
 
@@ -512,6 +528,7 @@ def test_telegram_commands():
             for h in hlist:
                 cb = getattr(h, "callback", None)
                 if cb:
+                    # owner_only uses @wraps, so __name__ survives the guard wrapper
                     names.append(cb.__name__)
         want = {"start_command", "tugas_command", "briefing_command", "courses_command",
                 "kerjakan_command", "kumpul_command", "clear_command", "model_command",
@@ -519,6 +536,233 @@ def test_telegram_commands():
         missing = want - set(names)
         return not missing, f"callbacks={sorted(set(names))}; missing={sorted(missing)}"
     check("7. Telegram Bot", "handler callbacks wired to right functions", _handlers_named)
+
+
+# ─────────────────────────────────────────────────────────────
+# 8. OWNER-ONLY ACCESS GUARD  (regresi: bot tanpa auth = bisa menulis ke Moodle asli)
+# ─────────────────────────────────────────────────────────────
+def test_owner_guard():
+    import src.telegram_bot as tb
+
+    def _guard_rejects_stranger():
+        calls = []
+
+        @tb.owner_only
+        async def sensitive(update, context):
+            calls.append(update.effective_chat.id)
+
+        tb.OWNER_CHAT_ID = 1176822531
+        _run(sensitive(FakeUpdate(999999), FakeCtx()))   # bukan owner
+        return calls == [], f"stranger chat 999999 blocked={calls == []} (handler dipanggil {len(calls)}x)"
+    check("8. Owner Guard", "non-owner chat_id rejected", _guard_rejects_stranger)
+
+    def _guard_allows_owner():
+        calls = []
+
+        @tb.owner_only
+        async def sensitive(update, context):
+            calls.append(update.effective_chat.id)
+
+        tb.OWNER_CHAT_ID = 1176822531
+        _run(sensitive(FakeUpdate(1176822531), FakeCtx()))
+        return calls == [1176822531], f"owner allowed={calls == [1176822531]} calls={calls}"
+    check("8. Owner Guard", "owner chat_id allowed through", _guard_allows_owner)
+
+    def _fail_closed_when_unset():
+        calls = []
+
+        @tb.owner_only
+        async def sensitive(update, context):
+            calls.append(1)
+
+        tb.OWNER_CHAT_ID = None       # TELEGRAM_CHAT_ID kosong/tidak valid
+        _run(sensitive(FakeUpdate(1176822531), FakeCtx()))
+        return calls == [], f"fail-closed when TELEGRAM_CHAT_ID unset={calls == []}"
+    check("8. Owner Guard", "fail-closed when TELEGRAM_CHAT_ID unset", _fail_closed_when_unset)
+
+    def _every_handler_guarded():
+        app = tb.create_bot_app()
+        if app is None:
+            return False, "no app"
+        unguarded = [h.callback.__name__ for hlist in app.handlers.values() for h in hlist
+                     if getattr(h, "callback", None) and not hasattr(h.callback, "__wrapped__")]
+        return not unguarded, ("all handlers wrapped by owner_only" if not unguarded
+                               else f"UNGUARDED: {unguarded}")
+    check("8. Owner Guard", "every registered handler goes through owner_only", _every_handler_guarded)
+
+
+# ─────────────────────────────────────────────────────────────
+# 9. SUBMIT / STATUS CORRECTNESS  (regresi: upload gagal dilaporkan sukses)
+# ─────────────────────────────────────────────────────────────
+FORM_HTML = ('<html><form id="mform1" method="post" action="/mod/assign/view.php">'
+             '<input name="sesskey" value="SK"/><input name="files_filemanager" value="12"/>'
+             '<input name="id" value="777"/></form>'
+             '<div id="context"><script>var x={"context":{"id":5}}</script></div>'
+             '<script>var y={"5":{"id":5,"name":"upload","type":"upload"}};</script></html>')
+
+
+def _submit_against(page_html):
+    """Jalankan submit_assignment dengan halaman respons terkontrol."""
+    import src.moodle_client as mc
+    from pathlib import Path
+
+    c = mc.MoodleClient()
+    c.is_logged_in = True
+    c.session.get = lambda url, **kw: FakeResp(url=url, status_code=200, text=FORM_HTML)
+    c.session.post = lambda url, **kw: FakeResp(url=url, status_code=200, text=page_html)
+    tmp = Path(tempfile.mkdtemp(prefix="qa_submit_")) / "Tugas.docx"
+    tmp.write_bytes(b"data")
+    return c.submit_assignment("https://elearning.umn.ac.id/mod/assign/view.php?id=777", tmp)
+
+
+def test_submit_verdicts():
+    def _rejected():
+        res = _submit_against('<div class="alert alert-danger">File Tugas.docx could not be '
+                              'added to the submission. Please try again.</div>')
+        return res.get("ok") is False, f"ok={res.get('ok')!r} error={res.get('error')!r} (want ok=False)"
+    check("9. Submit Verdicts", "Moodle rejection page -> ok=False", _rejected)
+
+    def _unreadable_status():
+        res = _submit_against("<html><body><p>Some unrelated page</p></body></html>")
+        return res.get("ok") is False, f"ok={res.get('ok')!r} error={res.get('error')!r} (want ok=False)"
+    check("9. Submit Verdicts", "unreadable status -> ok=False, not silent success", _unreadable_status)
+
+    def _submitted():
+        res = _submit_against('<table class="generaltable"><tr><th>Submission status</th>'
+                              '<td>Submitted for grading</td></tr></table>')
+        return res.get("ok") is True, f"ok={res.get('ok')!r} status={res.get('status')!r}"
+    check("9. Submit Verdicts", "submitted status -> ok=True", _submitted)
+
+    def _draft():
+        res = _submit_against('<table class="generaltable"><tr><th>Submission status</th>'
+                              '<td>Draft</td></tr></table>')
+        return res.get("ok") is True, f"ok={res.get('ok')!r} status={res.get('status')!r}"
+    check("9. Submit Verdicts", "draft status -> ok=True", _draft)
+
+
+# ─────────────────────────────────────────────────────────────
+# 10. TIMELINE vs HTML STATUS  (regresi: tugas terkumpul tetap "pending")
+# ─────────────────────────────────────────────────────────────
+COURSE_HTML = '<html><a href="/mod/assign/view.php?id=777">Tugas A</a></html>'
+
+
+def test_timeline_status_merge():
+    import src.moodle_client as mc
+
+    def _submitted_via_timeline():
+        c = mc.MoodleClient()
+        c.is_logged_in = True
+        c.get_timeline_events = lambda: [{
+            "id": "777", "course_id": "9", "course_name": "(IF542-A) Deep Learning - LEC",
+            "title": "Tugas A", "url": "x", "status": "Pending", "is_submitted": None,
+            "due_date": "Friday, 03 October 2026, 23:59 WIB", "time_remaining": "3 hari lagi",
+            "type": "assignment", "modulename": "assign", "timesort": 100,
+        }]
+
+        def fake_get(url, **kw):
+            if url.endswith("/my/"):
+                return FakeResp(url=url, text='"sesskey":"abc"')
+            if "/course/view.php" in url:
+                return FakeResp(url=url, text=COURSE_HTML)
+            return FakeResp(url=url, text='<table class="generaltable"><tr>'
+                                           '<th>Submission status</th>'
+                                           '<td>Submitted for grading</td></tr></table>')
+        c.session.get = fake_get
+        c.session.post = lambda url, **kw: FakeResp(url=url, status_code=200, text="[]")
+        out = c.get_assignments([{"id": "9", "title": "(IF542-A) Deep Learning - LEC",
+                                  "url": "https://elearning.umn.ac.id/course/view.php?id=9",
+                                  "clean_name": "dl"}])
+        got = [a["is_submitted"] for a in out]
+        ts = [a.get("timesort") for a in out]
+        return got == [True], f"is_submitted={got} (want [True]); timesort kept={ts}"
+    check("10. Status Merge", "already-submitted tugas not stuck pending", _submitted_via_timeline)
+
+    def _timeline_only_kept():
+        c = mc.MoodleClient()
+        c.is_logged_in = True
+        c.get_timeline_events = lambda: [{
+            "id": "888", "course_id": "9", "course_name": "Kursus", "title": "Quiz X",
+            "url": "x", "status": "Pending", "is_submitted": None, "due_date": "d",
+            "time_remaining": "r", "type": "quiz", "modulename": "quiz", "timesort": 50,
+        }]
+        c.session.get = lambda url, **kw: FakeResp(url=url, text='<html>no assign links</html>')
+        c.session.post = lambda url, **kw: FakeResp(url=url, status_code=200, text="[]")
+        out = c.get_assignments([{"id": "9", "title": "Kursus",
+                                  "url": "https://elearning.umn.ac.id/course/view.php?id=9",
+                                  "clean_name": "dl"}])
+        return len(out) == 1, f"timeline-only entries preserved={len(out) == 1} count={len(out)}"
+    check("10. Status Merge", "timeline-only entries not dropped by HTML pass", _timeline_only_kept)
+
+
+# ─────────────────────────────────────────────────────────────
+# 11. TELEGRAM MARKDOWN FALLBACK (regresi: briefing hilang diam-diam)
+# ─────────────────────────────────────────────────────────────
+def test_markdown_fallback():
+    import src.scheduler as sch
+
+    def _retries_plain_on_400():
+        attempts = []
+
+        class Resp:
+            def __init__(self, code):
+                self.status_code = code
+                self.text = '{"ok":false,"description":"Bad Request: can\'t parse entities"}'
+
+        def fake_post(url, json=None, **kw):
+            attempts.append(json)
+            return Resp(400 if json.get("parse_mode") else 200)
+
+        sch.requests.post = fake_post
+        sch.TELEGRAM_BOT_TOKEN = "x"
+        sch.TELEGRAM_CHAT_ID = "1"
+        sch.send_telegram_alert("Jelaskan fungsi `_detect_target_course`")
+        plain = [a for a in attempts if a.get("parse_mode") is None]
+        return len(plain) == 1, f"attempts={len(attempts)}, plain retry={len(plain)}"
+    check("11. Markdown Fallback", "cron alert retries plain text after 400", _retries_plain_on_400)
+
+    def _bot_reply_helper_falls_back():
+        import src.telegram_bot as tb
+        sent = []
+
+        class Msg:
+            async def reply_text(self, text, parse_mode=None):
+                if parse_mode and "_" in text:
+                    raise Exception("Bad Request: can't parse entities")
+                sent.append((text, parse_mode))
+
+        upd = type("U", (), {"message": Msg()})()
+        _run(tb._reply(upd, "Jelaskan `_detect_target_course`"))
+        return len(sent) == 1 and sent[0][1] is None, f"sent={sent}"
+    check("11. Markdown Fallback", "bot _reply falls back to plain text", _bot_reply_helper_falls_back)
+
+
+# ─────────────────────────────────────────────────────────────
+# 12. LOGIN MUST NOT FALL THROUGH TO SUCCESS
+# ─────────────────────────────────────────────────────────────
+def test_login_strictness():
+    import src.moodle_client as mc
+
+    def _maintenance_page_fails():
+        c = mc.MoodleClient()
+        c.session.get = lambda url, **kw: FakeResp(url=url, status_code=200,
+                                                   text='<html><input name="logintoken" value="T"/></html>')
+        c.session.post = lambda url, **kw: FakeResp(
+            url="https://elearning.umn.ac.id/login/index.php?degree=s1",
+            status_code=200, text="<html>Server under maintenance</html>")
+        ok = c.login()
+        return ok is False and c.is_logged_in is False, f"login()={ok}, is_logged_in={c.is_logged_in}"
+    check("12. Login Strictness", "maintenance page -> login False", _maintenance_page_fails)
+
+    def _real_login_succeeds():
+        c = mc.MoodleClient()
+        c.session.get = lambda url, **kw: FakeResp(url=url, status_code=200,
+                                                   text='<html><input name="logintoken" value="T"/></html>')
+        c.session.post = lambda url, **kw: FakeResp(
+            url="https://elearning.umn.ac.id/dashboard/", status_code=200,
+            text='<html><a href="/login/logout.php">Log out</a></html>')
+        ok = c.login()
+        return ok is True and c.is_logged_in is True, f"login()={ok}, is_logged_in={c.is_logged_in}"
+    check("12. Login Strictness", "dashboard + logout link -> login True", _real_login_succeeds)
 
 
 def main():
@@ -529,6 +773,11 @@ def main():
     test_submit_validation()
     test_aliases_and_rag()
     test_telegram_commands()
+    test_owner_guard()
+    test_submit_verdicts()
+    test_timeline_status_merge()
+    test_markdown_fallback()
+    test_login_strictness()
     fails = report()
     return 1 if fails else 0
 

@@ -1,0 +1,20 @@
+# Kredensial — JANGAN pernah masuk image layer.
+# docker-compose.yml sudah bind-mount .env ke /app/.env saat runtime.
+.env
+.env.*
+!.env.example
+
+# Venv & cache Python
+venv/
+__pycache__/
+*.py[cod]
+
+# Data hasil sync: materi kuliah, teks hasil ekstraksi,Assignments, chat histories
+data/
+
+# Git & editor
+.git/
+.vscode/
+.idea/
+.DS_Store
+*.log

@@ -1,5 +1,4 @@
 import os
-import shutil
 import logging
 from pathlib import Path
 from typing import Optional, List, Dict
@@ -7,12 +6,6 @@ from typing import Optional, List, Dict
 import pypdf
 from pptx import Presentation
 import docx
-from PIL import Image
-try:
-    import pytesseract
-    HAS_TESSERACT = shutil.which("tesseract") is not None
-except ImportError:
-    HAS_TESSERACT = False
 
 from src.config import MATERIALS_DIR, EXTRACTED_TEXT_DIR
 
