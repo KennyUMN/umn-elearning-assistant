@@ -21,7 +21,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt
 
 from src.academic_styler import render_umn_academic_document
-from src.ai_service import AIService
+from src.ai_service import AIService, INJECTION_RULE, fenced
 from src.anti_slop import ANTI_SLOP_SYSTEM_INSTRUCTIONS, sanitize_sections_slop, clean_text_slop
 from src.config import (
     ASSIGNMENTS_ATTACH_DIR,
@@ -236,19 +236,21 @@ Strukturkan sections ke dalam format laporan terstruktur:
         return f"""Kamu adalah mahasiswa UMN bernama {name} (NIM {nim}) yang cerdas, berpikiran kritis, dan menguasai materi teknis.
 Kerjakan tugas kuliah berikut SEBAIK MUNGKIN, DENGAN KEDALAMAN AKADEMIS TINGGI, dan SESUAI FORMAT YANG DIMINTA SOAL.
 
+{INJECTION_RULE}
+
 === IDENTITAS TUGAS ===
 Mata Kuliah : {assignment.get('course_name', '-')}
 Judul Tugas : {assignment.get('title', '-')}
 Deadline    : {assignment.get('due_date', '-')}
 
 === INSTRUKSI / SOAL TUGAS (dari e-learning) ===
-{description or '(Deskripsi kosong — kerjakan berdasarkan judul tugas dan materi kuliah yang relevan.)'}
+{fenced(description or '(Deskripsi kosong — kerjakan berdasarkan judul tugas dan materi kuliah yang relevan.)', 'DESKRIPSI SOAL dari e-learning')}
 
 === LAMPIRAN SOAL (teks hasil ekstraksi) ===
-{attachment_text or '(Tidak ada lampiran soal.)'}
+{fenced(attachment_text or '(Tidak ada lampiran soal.)', 'LAMPIRAN SOAL')}
 
 === MATERI KULIAH RELEVAN ===
-{context}
+{fenced(context, 'MATERI KULIAH')}
 
 {ANTI_SLOP_SYSTEM_INSTRUCTIONS}
 
