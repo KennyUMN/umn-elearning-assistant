@@ -31,26 +31,42 @@ logger = logging.getLogger("ai_service")
 
 VALID_PROVIDERS = ("gemini", "openrouter")
 
-# Preset model yang bisa dipilih via perintah /model di Telegram
+# Rantai fallback + preset /model.
+#
+# SEMUA nama di bawah sudah diverifikasi live pada 2026-09-30 lewat
+# models.list() + satu panggilan generate_content sungguhan. Gemini 2.5
+# (flash/pro/flash-lite) sudah DIHAPUS Google dan membalas 404 "no longer
+# available"; slug :free OpenRouter juga rot cepat. Kalau sebuah model mati,
+# ganti dengan yang sudah diverifikasi — jangan menebak nama.
+#
+# `scripts/check_models.py` memverifikasi daftar ini dan bisa dijalankan ulang
+# berkala; ia juga menulis MODEL_PRESETS di bawah bila ada yang perlu diganti.
+GEMINI_FALLBACK_CHAIN = [
+    "models/gemini-3.7-flash",   # default: cepat +/−/− tanpa preview suffix
+    "models/gemini-3.1-flash-lite",
+    "models/gemini-flash-lite-latest",
+]
+
 MODEL_PRESETS = {
     "gemini": {
         "default": "gemini-3.7-flash (auto-fallback)",
         "options": [
             "gemini-3.7-flash",
-            "gemini-flash-lite-latest",
-            "gemini-3.1-flash-lite",
+            "gemini-3.8-flash",
             "gemini-3.6-flash",
-            "gemini-2.5-flash",
-            "gemini-2.5-pro"
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-flash-lite-latest",
         ]
     },
     "openrouter": {
         "default": OPENROUTER_MODEL,
         "options": [
-            OPENROUTER_MODEL,
-            "deepseek/deepseek-chat-v3.1:free",
-            "google/gemini-2.0-flash-exp:free",
-            "meta-llama/llama-3.3-70b-instruct:free"
+            "qwen/qwen3.8-27b:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "nvidia/nemotron-3.5-lightning:free",
+            "inclusionai/ling-3.0-flash-sante:free",
+            "poolside/laguna-s-2.1:free",
         ]
     }
 }
@@ -126,13 +142,10 @@ class AIService:
     def __init__(self, api_key: str = GEMINI_API_KEY):
         self.api_key = api_key
         self.client = genai.Client(api_key=self.api_key) if self.api_key else None
-        # Default fallback chain (fast, high-availability Google models)
-        self.models_to_try = [
-            "models/gemini-2.5-flash",
-            "models/gemini-flash-latest",
-            "models/gemini-flash-lite-latest",
-            "models/gemini-3.7-flash"
-        ]
+        # Rantai terverifikasi (lihat GEMINI_FALLBACK_CHAIN). Entri lama
+        # (gemini-2.5-flash dll.) sudah dihapus Google dan membalas 404, jadi
+        # tiap generate_content membuang 1-2 request gagal sebelum berhasil.
+        self.models_to_try = list(GEMINI_FALLBACK_CHAIN)
 
     def is_configured(self) -> bool:
         return bool(self.client and self.api_key)

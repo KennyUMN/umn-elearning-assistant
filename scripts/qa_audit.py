@@ -431,8 +431,8 @@ def test_aliases_and_rag():
         return ok, f"{got}"
     check("6. Aliases & RAG", "_module_week_number parsing", _weeknum)
 
-    # RAG week scoring on a synthetic corpus (no touching real data)
     def _week_scoring():
+        # RAG week scoring on a synthetic corpus (no touching real data)
         tmp = Path(tempfile.mkdtemp(prefix="qa_rag_"))
         cdir = tmp / "(IF542-A) Deep Learning - LEC"
         cdir.mkdir(parents=True)
@@ -765,6 +765,85 @@ def test_login_strictness():
     check("12. Login Strictness", "dashboard + logout link -> login True", _real_login_succeeds)
 
 
+# ─────────────────────────────────────────────────────────────
+# 13. MODEL LIST IS LIVE  (regresi: 2.5 dihapus Google, slug :free rot)
+# ─────────────────────────────────────────────────────────────
+def test_model_list():
+    """Nama model hardcoded cepat basi. Cek statis selalu; cek live bila ada API key."""
+    from src.ai_service import MODEL_PRESETS, OPENROUTER_MODEL
+
+    def _chain():
+        # GEMINI_FALLBACK_CHAIN belum ada di versi lama — laporkan, jangan crash.
+        try:
+            from src.ai_service import GEMINI_FALLBACK_CHAIN
+            return GEMINI_FALLBACK_CHAIN
+        except ImportError:
+            return None
+
+    def _no_retired_gemini():
+        chain = _chain()
+        names = list(chain or []) + MODEL_PRESETS["gemini"]["options"]
+        if chain is None:
+            return False, ("GEMINI_FALLBACK_CHAIN tidak ada — rantai fallback masih "
+                           "hardcoded inline di AIService.__init__")
+        # Google sudah menghapus 2.5; 404-nya mahal (1 request sia-sia per generate).
+        retired = [m for m in names if "2.5" in m]
+        return not retired, (f"chain={chain}" if not retired
+                             else f"model 2.5 yang sudah dihapus Google: {retired}")
+    check("13. Model List", "no retired gemini-2.5 in chain/presets", _no_retired_gemini)
+
+    def _chain_shape():
+        chain = _chain()
+        if chain is None:
+            return False, "GEMINI_FALLBACK_CHAIN tidak ada"
+        ok = (len(chain) >= 2
+              and all(m.startswith("models/") for m in chain)
+              and len(set(chain)) == len(chain))
+        return ok, f"chain={chain}"
+    check("13. Model List", "fallback chain well-formed, no dupes", _chain_shape)
+
+    def _service_uses_constant():
+        chain = _chain()
+        from src.ai_service import AIService
+        svc = AIService()
+        if chain is None:
+            return False, f"service chain={svc.models_to_try} (hardcoded inline, bukan konstanta)"
+        return svc.models_to_try == chain, \
+            f"service chain matches constant={svc.models_to_try == chain}"
+    check("13. Model List", "AIService uses GEMINI_FALLBACK_CHAIN", _service_uses_constant)
+
+    def _openrouter_default_live():
+        import os
+        from dotenv import load_dotenv
+        load_dotenv(ROOT / ".env")
+        key = os.getenv("OPENROUTER_API_KEY", "")
+        if not key:
+            return True, "SKIP-ish: no OPENROUTER_API_KEY, static checks only"
+        import requests
+        ids = {m["id"] for m in requests.get("https://openrouter.ai/api/v1/models",
+                                             headers={"Authorization": f"Bearer {key}"},
+                                             timeout=30).json().get("data", [])}
+        return OPENROUTER_MODEL in ids, \
+            f"default OPENROUTER_MODEL={OPENROUTER_MODEL} in catalog={OPENROUTER_MODEL in ids}"
+    check("13. Model List", "default OpenRouter slug still in catalog", _openrouter_default_live)
+
+    def _all_presets_in_catalog():
+        import os
+        from dotenv import load_dotenv
+        load_dotenv(ROOT / ".env")
+        key = os.getenv("OPENROUTER_API_KEY", "")
+        if not key:
+            return True, "SKIP-ish: no OPENROUTER_API_KEY, static checks only"
+        import requests
+        ids = {m["id"] for m in requests.get("https://openrouter.ai/api/v1/models",
+                                             headers={"Authorization": f"Bearer {key}"},
+                                             timeout=30).json().get("data", [])}
+        missing = [s for s in MODEL_PRESETS["openrouter"]["options"] if s not in ids]
+        return not missing, (f"all {len(MODEL_PRESETS['openrouter']['options'])} presets in catalog"
+                             if not missing else f"roted slugs: {missing} -> ganti via scripts/check_models.py")
+    check("13. Model List", "all OpenRouter presets in catalog", _all_presets_in_catalog)
+
+
 def main():
     test_imports()
     test_conversation()
@@ -778,6 +857,7 @@ def main():
     test_timeline_status_merge()
     test_markdown_fallback()
     test_login_strictness()
+    test_model_list()
     fails = report()
     return 1 if fails else 0
 
